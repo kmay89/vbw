@@ -46,7 +46,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
-      - run: cargo clippy --all-targets --all-features -- -D warnings -D clippy::pedantic -A clippy::module_name_repetitions -A clippy::must_use_candidate
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
   # ---------------------------------------------------------------------------
   # Tests — debug + release, multi-platform
@@ -75,9 +75,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run audit
+        run: cargo audit
 
   # ---------------------------------------------------------------------------
   # cargo-deny — license, ban, source, advisory policy

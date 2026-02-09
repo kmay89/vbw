@@ -31,9 +31,8 @@ release: ## Build release binary
 fmt: ## Check formatting
 	cargo fmt --all -- --check
 
-clippy: ## Run clippy with strict warnings
-	cargo clippy --all-targets --all-features -- -D warnings -D clippy::pedantic \
-		-A clippy::module_name_repetitions -A clippy::must_use_candidate
+clippy: ## Run clippy with strict warnings (lint config in Cargo.toml)
+	cargo clippy --all-targets --all-features -- -D warnings
 
 test: ## Run all tests (debug + release)
 	cargo test --all-features

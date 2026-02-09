@@ -8,7 +8,7 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
+# NOTE: Cargo.lock is committed for binary crates (reproducible builds).
 
 # ---------------------------------------------------------------------------
 # Build artifacts

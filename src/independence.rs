@@ -1,7 +1,7 @@
+use crate::policy::VbwPolicy;
 use anyhow::Result;
 use regex::Regex;
 use serde_json::{json, Value};
-use crate::policy::VbwPolicy;
 
 pub fn check_independence(prov: &Value, policy: &VbwPolicy) -> Result<Value> {
     let s = prov.to_string();
@@ -55,13 +55,15 @@ pub fn check_independence(prov: &Value, policy: &VbwPolicy) -> Result<Value> {
         }
     }
 
-    let builder_id = prov.pointer("/predicate/builder/id")
+    let builder_id = prov
+        .pointer("/predicate/builder/id")
         .and_then(|v| v.as_str())
         .or_else(|| prov.pointer("/builder/id").and_then(|v| v.as_str()))
         .unwrap_or("")
         .to_string();
 
-    let builder_on_allowlist = policy.allowed_builder_prefixes
+    let builder_on_allowlist = policy
+        .allowed_builder_prefixes
         .iter()
         .any(|p| builder_id.starts_with(p));
 
@@ -80,7 +82,11 @@ pub fn check_independence(prov: &Value, policy: &VbwPolicy) -> Result<Value> {
         }
     }
 
-    let overall = if blocking_failures.is_empty() { "pass" } else { "fail" };
+    let overall = if blocking_failures.is_empty() {
+        "pass"
+    } else {
+        "fail"
+    };
 
     Ok(json!({
         "overall": overall,
@@ -104,7 +110,10 @@ mod tests {
         let policy = VbwPolicy::default();
         let result = check_independence(&prov, &policy).unwrap();
         assert_eq!(result["overall"], "fail");
-        assert!(result["blocking_failures"].as_array().unwrap().contains(&json!("secrets_detected")));
+        assert!(result["blocking_failures"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("secrets_detected")));
     }
 
     #[test]
@@ -113,28 +122,42 @@ mod tests {
         let policy = VbwPolicy::default();
         let result = check_independence(&prov, &policy).unwrap();
         assert_eq!(result["overall"], "fail");
-        assert!(result["blocking_failures"].as_array().unwrap().contains(&json!("private_network_references")));
+        assert!(result["blocking_failures"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("private_network_references")));
     }
 
     #[test]
     fn test_builder_allowlist_warning() {
         // NOTE: builder.id is under predicate/builder/id for SLSA v1 provenance.
-        let prov = json!({"predicate": {"builder": {"id": "https://custom.ci.example.com"}}});
-        let mut policy = VbwPolicy::default();
-        policy.builder_allowlist_is_warning = true;
+        // Include a digest field so require_digests does not trigger a blocking failure.
+        let prov = json!({"predicate": {"builder": {"id": "https://custom.ci.example.com"}}, "digest": {"sha256": "abc123"}});
+        let policy = VbwPolicy {
+            builder_allowlist_is_warning: true,
+            ..VbwPolicy::default()
+        };
         let result = check_independence(&prov, &policy).unwrap();
         assert_eq!(result["overall"], "pass");
-        assert!(result["warnings"].as_array().unwrap().contains(&json!("builder_not_on_allowlist")));
+        assert!(result["warnings"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("builder_not_on_allowlist")));
     }
 
     #[test]
     fn test_builder_allowlist_blocking() {
         let prov = json!({"predicate": {"builder": {"id": "https://custom.ci.example.com"}}});
-        let mut policy = VbwPolicy::default();
-        policy.builder_allowlist_is_warning = false;
+        let policy = VbwPolicy {
+            builder_allowlist_is_warning: false,
+            ..VbwPolicy::default()
+        };
         let result = check_independence(&prov, &policy).unwrap();
         assert_eq!(result["overall"], "fail");
-        assert!(result["blocking_failures"].as_array().unwrap().contains(&json!("builder_not_on_allowlist")));
+        assert!(result["blocking_failures"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("builder_not_on_allowlist")));
     }
 
     #[test]
@@ -143,6 +166,9 @@ mod tests {
         let policy = VbwPolicy::default();
         let result = check_independence(&prov, &policy).unwrap();
         assert_eq!(result["overall"], "fail");
-        assert!(result["blocking_failures"].as_array().unwrap().contains(&json!("missing_digests")));
+        assert!(result["blocking_failures"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("missing_digests")));
     }
 }

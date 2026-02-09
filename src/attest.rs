@@ -1,6 +1,6 @@
 use anyhow::Result;
 use serde_json::{json, Value};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub fn make_vbw_statement(
     bundle_sha256: &str,

@@ -38,11 +38,6 @@ allow = [
 ]
 confidence-threshold = 0.8
 
-[[licenses.clarify]]
-name = "ring"
-expression = "MIT AND ISC AND OpenSSL"
-license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
-
 # --------------------------------------------------------------------------
 # Bans — prevent problematic crates
 # --------------------------------------------------------------------------
@@ -61,5 +56,5 @@ deny = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-registry = ["https://github.com/rust-lang/crates.io-index", "https://index.crates.io"]
 allow-git = []

@@ -1,24 +1,27 @@
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use serde_json::Value;
 use regex::Regex;
-use std::{fs, path::{Path, PathBuf}, process::Command};
+use serde_json::Value;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 use time::format_description::well_known::Rfc3339;
 
-mod independence;
 mod attest;
 mod bundlehash;
+mod independence;
 mod policy;
 
 use policy::VbwPolicy;
 
 // "Atm-grade" defensive limits for untrusted inputs.
 const MAX_JSON_BYTES: u64 = 20 * 1024 * 1024; // 20MB
-const MAX_TOOL_ERR_BYTES: usize = 8 * 1024;   // 8KB
+const MAX_TOOL_ERR_BYTES: usize = 8 * 1024; // 8KB
 
 fn read_file_limited(path: &Path, max: u64) -> Result<Vec<u8>> {
-    let meta = fs::symlink_metadata(path)
-        .with_context(|| format!("stat {}", path.display()))?;
+    let meta = fs::symlink_metadata(path).with_context(|| format!("stat {}", path.display()))?;
     if meta.file_type().is_symlink() {
         return Err(anyhow!("Refusing to read symlink: {}", path.display()));
     }
@@ -30,7 +33,7 @@ fn read_file_limited(path: &Path, max: u64) -> Result<Vec<u8>> {
             max
         ));
     }
-    Ok(fs::read(path).with_context(|| format!("read {}", path.display()))?)
+    fs::read(path).with_context(|| format!("read {}", path.display()))
 }
 
 fn sanitize_tool_stderr(stderr: &[u8]) -> String {
@@ -44,9 +47,18 @@ fn sanitize_tool_stderr(stderr: &[u8]) -> String {
     let patterns = [
         (r"AKIA[0-9A-Z]{16}", "AKIA****************"),
         (r"(?i)ghp_[A-Za-z0-9]{30,60}", "ghp_****************"),
-        (r"(?i)BEGIN (RSA|EC|OPENSSH) PRIVATE KEY", "BEGIN [REDACTED] PRIVATE KEY"),
-        (r"(?i)aws_secret_access_key\s*[:=]\s*[^\s]+", "aws_secret_access_key=[REDACTED]"),
-        (r"(?i)(password|token)\s*[:=]\s*[^\s]+", "[REDACTED]=[REDACTED]"),
+        (
+            r"(?i)BEGIN (RSA|EC|OPENSSH) PRIVATE KEY",
+            "BEGIN [REDACTED] PRIVATE KEY",
+        ),
+        (
+            r"(?i)aws_secret_access_key\s*[:=]\s*[^\s]+",
+            "aws_secret_access_key=[REDACTED]",
+        ),
+        (
+            r"(?i)(password|token)\s*[:=]\s*[^\s]+",
+            "[REDACTED]=[REDACTED]",
+        ),
         (r"(?i)bearer\s+[a-z0-9\-_\.=]{1,500}", "bearer [REDACTED]"),
     ];
     for (pat, repl) in patterns {
@@ -58,14 +70,20 @@ fn sanitize_tool_stderr(stderr: &[u8]) -> String {
     // Redact obvious absolute paths.
     s = s
         .lines()
-        .map(|line| if line.trim_start().starts_with('/') { "[REDACTED_PATH]" } else { line })
+        .map(|line| {
+            if line.trim_start().starts_with('/') {
+                "[REDACTED_PATH]"
+            } else {
+                line
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     s
 }
 
 #[derive(Parser)]
-#[command(name="vbw", about="Verified Build Witness", version)]
+#[command(name = "vbw", about = "Verified Build Witness", version)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -91,15 +109,15 @@ enum Cmd {
         #[arg(long)]
         artifact: Vec<PathBuf>,
 
-        /// SLSA provenance path (defaults to bundle_dir/provenance.json)
+        /// SLSA provenance path (defaults to `bundle_dir/provenance.json`)
         #[arg(long)]
         provenance: Option<PathBuf>,
 
-        /// in-toto layout path (defaults to bundle_dir/layout.json)
+        /// in-toto layout path (defaults to `bundle_dir/layout.json`)
         #[arg(long)]
         layout: Option<PathBuf>,
 
-        /// in-toto links directory (defaults to bundle_dir/links)
+        /// in-toto links directory (defaults to `bundle_dir/links`)
         #[arg(long)]
         links_dir: Option<PathBuf>,
 
@@ -131,24 +149,41 @@ enum Cmd {
         attestation: PathBuf,
         #[arg(long)]
         sigstore_bundle: PathBuf,
-    }
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::Verify {
-            bundle_dir, source_uri, artifact, provenance, layout,
-            links_dir, intoto_layout_keys, no_external, dry_run, slsa_mode, policy
-        } => {
-            verify_bundle(
-                &bundle_dir, source_uri, artifact, provenance, layout,
-                links_dir, intoto_layout_keys, no_external, dry_run, slsa_mode, policy
-            )
-        }
-        Cmd::Show { attestation, sigstore_bundle } => {
-            show_attestation(&attestation, &sigstore_bundle)
-        }
+            bundle_dir,
+            source_uri,
+            artifact,
+            provenance,
+            layout,
+            links_dir,
+            intoto_layout_keys,
+            no_external,
+            dry_run,
+            slsa_mode,
+            policy,
+        } => verify_bundle(
+            &bundle_dir,
+            source_uri,
+            artifact,
+            provenance,
+            layout,
+            links_dir,
+            intoto_layout_keys,
+            no_external,
+            dry_run,
+            slsa_mode,
+            policy,
+        ),
+        Cmd::Show {
+            attestation,
+            sigstore_bundle,
+        } => show_attestation(&attestation, &sigstore_bundle),
     }
 }
 
@@ -191,7 +226,11 @@ fn verify_bundle(
     // Load policy
     let policy_file = policy_path.or_else(|| {
         let p = bundle_dir.join("vbw-policy.json");
-        if p.exists() { Some(p) } else { None }
+        if p.exists() {
+            Some(p)
+        } else {
+            None
+        }
     });
     let policy = VbwPolicy::load(policy_file.as_deref())?;
 
@@ -203,11 +242,16 @@ fn verify_bundle(
         match slsa_mode {
             SlsaMode::Full => {
                 for a in &artifacts {
-                    let ap = if a.is_absolute() { a.clone() } else { bundle_dir.join(a) };
+                    let ap = if a.is_absolute() {
+                        a.clone()
+                    } else {
+                        bundle_dir.join(a)
+                    };
                     let mut cmd = Command::new("slsa-verifier");
                     cmd.arg("verify-artifact")
                         .arg(&ap)
-                        .arg("--provenance-path").arg(&prov_path);
+                        .arg("--provenance-path")
+                        .arg(&prov_path);
                     if let Some(uri) = &source_uri {
                         cmd.arg("--source-uri").arg(uri);
                     }
@@ -222,7 +266,8 @@ fn verify_bundle(
                 }
             }
             SlsaMode::SchemaOnly => {
-                let _v: Value = serde_json::from_slice(&read_file_limited(&prov_path, MAX_JSON_BYTES)?)?;
+                let _v: Value =
+                    serde_json::from_slice(&read_file_limited(&prov_path, MAX_JSON_BYTES)?)?;
                 slsa_detail = serde_json::json!({
                     "mode": "schema-only",
                     "note": "Only JSON parse performed (no artifact verification)"
@@ -233,12 +278,13 @@ fn verify_bundle(
 
     // --- in-toto verification
     let mut intoto_ok = true;
-    let mut intoto_detail = serde_json::json!({"skipped": no_external});
+    let intoto_detail;
 
     // Helper: gather key files from a path (file or directory)
     fn collect_key_paths(p: &Path) -> Result<Vec<PathBuf>> {
         // Canonicalize the root first (resolves symlinks, "..", etc.).
-        let base = p.canonicalize()
+        let base = p
+            .canonicalize()
             .with_context(|| format!("Failed to resolve key path: {}", p.display()))?;
 
         let mut out = Vec::new();
@@ -250,9 +296,8 @@ fn verify_bundle(
                 let path = ent.path();
 
                 // Skip broken symlinks / unreadable entries.
-                let md = match fs::symlink_metadata(&path) {
-                    Ok(m) => m,
-                    Err(_) => continue,
+                let Ok(md) = fs::symlink_metadata(&path) else {
+                    continue;
                 };
                 if md.file_type().is_symlink() {
                     // Never follow links from an untrusted bundle.
@@ -262,7 +307,9 @@ fn verify_bundle(
                     continue;
                 }
 
-                let canonical = path.canonicalize().with_context(|| format!("resolve {}", path.display()))?;
+                let canonical = path
+                    .canonicalize()
+                    .with_context(|| format!("resolve {}", path.display()))?;
                 if !canonical.starts_with(&base) {
                     return Err(anyhow!(
                         "Security: Path traversal attempt detected. {} escapes {}",
@@ -275,13 +322,19 @@ fn verify_bundle(
 
             out.sort();
             if out.len() > 256 {
-                return Err(anyhow!("Too many key files in directory ({} > 256)", out.len()));
+                return Err(anyhow!(
+                    "Too many key files in directory ({} > 256)",
+                    out.len()
+                ));
             }
             Ok(out)
         } else {
             let md = fs::symlink_metadata(&base)?;
             if md.file_type().is_symlink() {
-                return Err(anyhow!("Refusing to read symlink key file: {}", base.display()));
+                return Err(anyhow!(
+                    "Refusing to read symlink key file: {}",
+                    base.display()
+                ));
             }
             if !md.is_file() {
                 return Err(anyhow!("Key path is not a file: {}", base.display()));
@@ -301,13 +354,18 @@ fn verify_bundle(
                 });
             } else {
                 let mut cmd = Command::new("in-toto-verify");
-                cmd.arg("--layout").arg(&layout_path)
-                    .arg("--link-dir").arg(&links)
+                cmd.arg("--layout")
+                    .arg(&layout_path)
+                    .arg("--link-dir")
+                    .arg(&links)
                     .arg("--verification-keys");
                 for kp in &key_paths {
                     cmd.arg(kp);
                 }
-                let out = cmd.current_dir(bundle_dir).output().context("running in-toto-verify")?;
+                let out = cmd
+                    .current_dir(bundle_dir)
+                    .output()
+                    .context("running in-toto-verify")?;
                 if !out.status.success() {
                     intoto_ok = false;
                     intoto_detail = serde_json::json!({
@@ -331,7 +389,8 @@ fn verify_bundle(
                     "warning": "No in-toto layout keys provided; signatures not verified"
                 });
             } else {
-                let _v: Value = serde_json::from_slice(&read_file_limited(&layout_path, MAX_JSON_BYTES)?)?;
+                let _v: Value =
+                    serde_json::from_slice(&read_file_limited(&layout_path, MAX_JSON_BYTES)?)?;
                 intoto_detail = serde_json::json!({
                     "mode": "structural-only",
                     "warning": "No in-toto layout keys provided; signatures not verified"
@@ -342,9 +401,11 @@ fn verify_bundle(
         // no_external: structural-only checks
         if !links.exists() {
             intoto_ok = false;
-            intoto_detail = serde_json::json!({"mode": "structural-only", "error": "links/ missing"});
+            intoto_detail =
+                serde_json::json!({"mode": "structural-only", "error": "links/ missing"});
         } else {
-            let _v: Value = serde_json::from_slice(&read_file_limited(&layout_path, MAX_JSON_BYTES)?)?;
+            let _v: Value =
+                serde_json::from_slice(&read_file_limited(&layout_path, MAX_JSON_BYTES)?)?;
             intoto_detail = serde_json::json!({"mode": "structural-only", "skipped": true});
         }
     }
@@ -366,16 +427,20 @@ fn verify_bundle(
     let overall_pass = slsa_ok && intoto_ok && indep["overall"] == "pass";
     let result = if overall_pass { "PASS" } else { "FAIL" };
 
-    let failures = indep["blocking_failures"].as_array()
-        .unwrap_or(&[])
+    let empty_arr = Vec::new();
+
+    let failures = indep["blocking_failures"]
+        .as_array()
+        .unwrap_or(&empty_arr)
         .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .filter_map(|v| v.as_str().map(ToString::to_string))
         .collect::<Vec<_>>();
 
-    let warnings = indep["warnings"].as_array()
-        .unwrap_or(&[])
+    let warnings = indep["warnings"]
+        .as_array()
+        .unwrap_or(&empty_arr)
         .iter()
-        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .filter_map(|v| v.as_str().map(ToString::to_string))
         .collect::<Vec<_>>();
 
     let report = serde_json::json!({
@@ -396,7 +461,10 @@ fn verify_bundle(
 
     // --- Dry run exit
     if dry_run {
-        println!("(dry-run) Verification complete. See: {}", report_path.display());
+        println!(
+            "(dry-run) Verification complete. See: {}",
+            report_path.display()
+        );
         if !overall_pass {
             return Err(anyhow!("Verification failed (dry-run)"));
         }
@@ -413,35 +481,47 @@ fn verify_bundle(
         let out = Command::new("cosign")
             .arg("sign-blob")
             .arg("--yes")
-            .arg("--bundle").arg(&bundle_path)
+            .arg("--bundle")
+            .arg(&bundle_path)
             .arg(&att_path)
             .output()
             .context("running cosign sign-blob")?;
 
         if !out.status.success() {
-            return Err(anyhow!("cosign sign-blob failed: {}",
-                sanitize_tool_stderr(&out.stderr)));
+            return Err(anyhow!(
+                "cosign sign-blob failed: {}",
+                sanitize_tool_stderr(&out.stderr)
+            ));
         }
 
         let outv = Command::new("cosign")
             .arg("verify-blob")
-            .arg("--bundle").arg(&bundle_path)
+            .arg("--bundle")
+            .arg(&bundle_path)
             .arg(&att_path)
             .output()
             .context("running cosign verify-blob")?;
 
         if !outv.status.success() {
-            return Err(anyhow!("cosign verify-blob failed: {}",
-                sanitize_tool_stderr(&outv.stderr)));
+            return Err(anyhow!(
+                "cosign verify-blob failed: {}",
+                sanitize_tool_stderr(&outv.stderr)
+            ));
         }
     }
 
     // --- Summary output
-    if !slsa_ok { eprintln!("✗ SLSA check failed"); }
-    else { println!("✓ SLSA ok"); }
+    if !slsa_ok {
+        eprintln!("✗ SLSA check failed");
+    } else {
+        println!("✓ SLSA ok");
+    }
 
-    if !intoto_ok { eprintln!("✗ in-toto failed"); }
-    else { println!("✓ in-toto ok"); }
+    if !intoto_ok {
+        eprintln!("✗ in-toto failed");
+    } else {
+        println!("✓ in-toto ok");
+    }
 
     if !warnings.is_empty() {
         eprintln!("⚠ Warnings: {}", warnings.join(", "));
@@ -449,7 +529,10 @@ fn verify_bundle(
 
     if !overall_pass {
         eprintln!("✗ Independence checks failed");
-        return Err(anyhow!("Verification failed. See: {}", report_path.display()));
+        return Err(anyhow!(
+            "Verification failed. See: {}",
+            report_path.display()
+        ));
     }
 
     println!("✓ Independence policy: pass");
@@ -467,31 +550,56 @@ fn show_attestation(attestation: &Path, sigstore_bundle: &Path) -> Result<()> {
 
     let outv = Command::new("cosign")
         .arg("verify-blob")
-        .arg("--bundle").arg(sigstore_bundle)
+        .arg("--bundle")
+        .arg(sigstore_bundle)
         .arg(attestation)
         .output()
         .context("running cosign verify-blob")?;
 
     let sig_ok = outv.status.success();
 
-    let bundle_digest = att.pointer("/subject/0/digest/sha256")
-        .and_then(|v| v.as_str()).unwrap_or("unknown");
-    let verified_at = att.pointer("/predicate/verifiedAt")
-        .and_then(|v| v.as_str()).unwrap_or("unknown");
-    let slsa_ok = att.pointer("/predicate/results/slsa/ok")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let intoto_ok = att.pointer("/predicate/results/intoto/ok")
-        .and_then(|v| v.as_bool()).unwrap_or(false);
-    let indep = att.pointer("/predicate/results/independence/overall")
-        .and_then(|v| v.as_str()).unwrap_or("unknown");
+    let bundle_digest = att
+        .pointer("/subject/0/digest/sha256")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let verified_at = att
+        .pointer("/predicate/verifiedAt")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let slsa_ok = att
+        .pointer("/predicate/results/slsa/ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let intoto_ok = att
+        .pointer("/predicate/results/intoto/ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let indep = att
+        .pointer("/predicate/results/independence/overall")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
 
     println!("VBW Attestation v{}", env!("CARGO_PKG_VERSION"));
     println!("Bundle: sha256:{}", bundle_digest);
     println!("Verified: {}", verified_at);
     println!("SLSA: {}", if slsa_ok { "✓ pass" } else { "✗ fail" });
     println!("in-toto: {}", if intoto_ok { "✓ pass" } else { "✗ fail" });
-    println!("Independence: {}", if indep == "pass" { "✓ pass" } else { "✗ fail" });
-    println!("Sigstore: {}", if sig_ok { "✓ verified" } else { "✗ NOT verified" });
+    println!(
+        "Independence: {}",
+        if indep == "pass" {
+            "✓ pass"
+        } else {
+            "✗ fail"
+        }
+    );
+    println!(
+        "Sigstore: {}",
+        if sig_ok {
+            "✓ verified"
+        } else {
+            "✗ NOT verified"
+        }
+    );
 
     if !sig_ok {
         eprintln!("\n{}", sanitize_tool_stderr(&outv.stderr));

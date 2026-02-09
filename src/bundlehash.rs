@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Context, Result};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{fs, io::Read, path::Path};
 use walkdir::WalkDir;
-use serde_json::Value;
 
 /// Conservative limits for untrusted bundles.
 ///
@@ -13,8 +13,7 @@ const MAX_BUNDLE_FILES: usize = 10_000;
 const MAX_TOTAL_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2GB
 
 fn sha256_file_streaming(p: &Path, max_size: u64) -> Result<(String, u64)> {
-    let meta = fs::symlink_metadata(p)
-        .with_context(|| format!("stat {}", p.display()))?;
+    let meta = fs::symlink_metadata(p).with_context(|| format!("stat {}", p.display()))?;
     if meta.file_type().is_symlink() {
         return Err(anyhow!("Refusing to hash symlink: {}", p.display()));
     }
@@ -32,7 +31,9 @@ fn sha256_file_streaming(p: &Path, max_size: u64) -> Result<(String, u64)> {
     let mut h = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
-        let n = f.read(&mut buf).with_context(|| format!("read {}", p.display()))?;
+        let n = f
+            .read(&mut buf)
+            .with_context(|| format!("read {}", p.display()))?;
         if n == 0 {
             break;
         }
@@ -45,7 +46,11 @@ pub fn hash_bundle(bundle_dir: &Path) -> Result<(String, Value)> {
     let mut files = Vec::new();
     let mut total_size: u64 = 0;
 
-    for e in WalkDir::new(bundle_dir).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+    for e in WalkDir::new(bundle_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+    {
         if e.file_type().is_file() {
             // Never include VBW outputs in the bundle hash.
             if e.path().components().any(|c| c.as_os_str() == "vbw") {
@@ -54,11 +59,18 @@ pub fn hash_bundle(bundle_dir: &Path) -> Result<(String, Value)> {
             // Symlink defense (WalkDir normally reports symlinks separately, but be strict).
             let meta = fs::symlink_metadata(e.path())?;
             if meta.file_type().is_symlink() {
-                return Err(anyhow!("Refusing to include symlink in bundle: {}", e.path().display()));
+                return Err(anyhow!(
+                    "Refusing to include symlink in bundle: {}",
+                    e.path().display()
+                ));
             }
 
             if files.len() >= MAX_BUNDLE_FILES {
-                return Err(anyhow!("Too many files in bundle: {} (max {})", files.len(), MAX_BUNDLE_FILES));
+                return Err(anyhow!(
+                    "Too many files in bundle: {} (max {})",
+                    files.len(),
+                    MAX_BUNDLE_FILES
+                ));
             }
 
             let size = meta.len();
