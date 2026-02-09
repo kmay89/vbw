@@ -40,7 +40,7 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`
 
 1. Fork the repository and create a feature branch from `main`
 2. Ensure all CI checks pass before requesting review
-3. PRs require at least one approval from a CODEOWNER
+3. PRs require at least two approvals from a CODEOWNER
 4. Security-sensitive changes require review from `@scqcs/security`
 5. Squash commits before merge unless the commit history is meaningful
 

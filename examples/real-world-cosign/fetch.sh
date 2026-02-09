@@ -39,7 +39,5 @@ data=sys.stdin.read().strip().encode('utf-8')
 sys.stdout.buffer.write(base64.b64decode(data))
 PY
 
-} > provenance.json
-
 echo "✓ Downloaded cosign binary ($( (stat -f%z cosign-linux-amd64 2>/dev/null || stat -c%s cosign-linux-amd64) ) bytes)"
 echo "✓ Extracted SLSA provenance to downloads/provenance.json"
