@@ -1,0 +1,6 @@
+# Clippy configuration — enforced in CI as errors, not warnings.
+# Conservative thresholds suitable for security-critical code.
+cognitive-complexity-threshold = 30
+too-many-arguments-threshold = 12
+type-complexity-threshold = 300
+msrv = "1.78.0"

@@ -1,0 +1,59 @@
+[package]
+name = "vbw"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78.0"
+authors = ["SCQCS Initiative"]
+license = "Apache-2.0"
+description = "Verified Build Witness - Zero-knowledge build integrity verification"
+repository = "https://github.com/scqcs/vbw"
+homepage = "https://github.com/scqcs/vbw"
+documentation = "https://github.com/scqcs/vbw/blob/main/ARCHITECTURE.md"
+keywords = ["supply-chain", "slsa", "attestation", "security", "verification"]
+categories = ["development-tools", "cryptography"]
+readme = "README.md"
+exclude = [
+    "examples/",
+    ".github/",
+    "*.zip",
+]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+walkdir = "2"
+regex = "1"
+time = { version = "0.3", features = ["formatting"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "vbw"
+path = "src/main.rs"
+
+[lib]
+name = "vbw"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+debug = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

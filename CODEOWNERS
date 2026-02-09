@@ -1,0 +1,19 @@
+# =============================================================================
+# CODEOWNERS — Mandatory review policy
+# =============================================================================
+# Every PR must be reviewed by at least one code owner.
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default: core maintainers review everything
+* @scqcs/maintainers
+
+# Security-critical paths require security team review
+/src/independence.rs       @scqcs/security
+/src/bundlehash.rs         @scqcs/security
+/src/policy.rs             @scqcs/security
+SECURITY.md                @scqcs/security
+deny.toml                  @scqcs/security
+
+# CI/CD changes require platform team review
+/.github/                  @scqcs/platform
+Cargo.toml                 @scqcs/maintainers @scqcs/security

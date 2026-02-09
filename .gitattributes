@@ -1,0 +1,38 @@
+# Enforce consistent line endings across platforms.
+# Critical for reproducible builds and cryptographic hashing.
+* text=auto eol=lf
+
+# Source code
+*.rs text eol=lf diff=rust
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+
+# Scripts must remain executable
+*.sh linguist-language=Shell
+
+# Binary files — never diff, never merge
+*.wasm binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.a binary
+*.zip binary
+*.tar.gz binary
+*.tar.bz2 binary
+*.tar.xz binary
+
+# Lock files — always merge from upstream
+Cargo.lock merge=binary
+
+# Prevent sensitive patterns from being diffed
+*.pem filter=clean-pem diff=clean-pem
+*.key filter=clean-key diff=clean-key
+
+# Linguist overrides
+examples/** linguist-documentation
+docs/** linguist-documentation

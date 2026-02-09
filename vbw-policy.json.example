@@ -1,0 +1,11 @@
+{
+  "allowed_builder_prefixes": [
+    "https://github.com/",
+    "https://gitlab.com/",
+    "https://tekton.dev/"
+  ],
+  "builder_allowlist_is_warning": true,
+  "forbid_private_network_refs": true,
+  "forbid_secrets": true,
+  "require_digests": true
+}

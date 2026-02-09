@@ -1,0 +1,18 @@
+═══════════════════════════════════════════════
+VBW Real-World Demo: Verifying Cosign Release
+═══════════════════════════════════════════════
+
+Checking prerequisites...
+✓ Prerequisites OK
+
+Running VBW verification (with cryptographic in-toto verification)...
+
+✓ SLSA ok
+✓ in-toto ok
+✓ Independence policy: pass
+→ VBW attestation: bundle/vbw/vbw-attestation.json
+→ Sigstore bundle: bundle/vbw/vbw-attestation.sigstore.bundle
+→ Report: bundle/vbw/report.json
+
+═══════════════════════════════════════════════
+✓ Verification PASSED

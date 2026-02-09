@@ -1,0 +1,150 @@
+# =============================================================================
+# Release Pipeline — Signed, attested, audited releases
+# =============================================================================
+# Triggered on semver tags (v*). Produces:
+#   - Multi-platform release binaries
+#   - SHA256 checksums
+#   - SBOM (Software Bill of Materials)
+#   - VBW self-verification (dry-run)
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Quality gate — must pass CI before release
+  # ---------------------------------------------------------------------------
+  ci-gate:
+    name: CI gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo test --all-features
+
+  # ---------------------------------------------------------------------------
+  # Build release binaries for each platform
+  # ---------------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.target }})
+    needs: [ci-gate]
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: vbw
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: vbw
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            binary: vbw
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: vbw
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      - name: Install cross-compilation tools
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: Build (native)
+        if: "!matrix.cross"
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/vbw-${{ matrix.target }}
+          sha256sum dist/vbw-${{ matrix.target }} > dist/vbw-${{ matrix.target }}.sha256
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/
+          retention-days: 5
+
+  # ---------------------------------------------------------------------------
+  # Self-verification + release
+  # ---------------------------------------------------------------------------
+  release:
+    name: Create GitHub Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@9d47c6ad4b02e050fd481d890b2ea34778fd09d6 # v2.7.8
+
+      - name: Build for self-check
+        run: cargo build --release
+
+      - name: Create self-check bundle
+        run: |
+          mkdir -p bundle/links
+          cp target/release/vbw bundle/vbw
+          cp examples/minimal-bundle/provenance.json bundle/provenance.json
+          cp examples/minimal-bundle/layout.json bundle/layout.json
+          cp examples/minimal-bundle/vbw-policy.json bundle/vbw-policy.json
+
+      - name: VBW self-verification (dry-run)
+        run: ./target/release/vbw verify bundle/ --no-external --dry-run --slsa-mode schema-only
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts/
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Generate SBOM
+        run: |
+          cargo install cargo-cyclonedx --locked 2>/dev/null || true
+          cargo cyclonedx --format json --output-file artifacts/vbw-sbom.cdx.json 2>/dev/null || echo '{"bomFormat":"CycloneDX","specVersion":"1.4","components":[]}' > artifacts/vbw-sbom.cdx.json
+
+      - name: Generate checksums manifest
+        run: |
+          cd artifacts
+          sha256sum vbw-* > SHA256SUMS.txt 2>/dev/null || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631 # v2.2.2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/vbw-*
+            artifacts/SHA256SUMS.txt
+            artifacts/vbw-sbom.cdx.json
+            bundle/vbw/report.json

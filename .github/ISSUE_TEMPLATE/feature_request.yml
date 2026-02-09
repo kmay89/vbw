@@ -1,0 +1,29 @@
+name: Feature Request
+description: Suggest an enhancement or new capability
+labels: ["enhancement"]
+assignees: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What problem does this feature solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: Describe the desired behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches did you consider?
+  - type: textarea
+    id: security
+    attributes:
+      label: Security Implications
+      description: Does this feature affect the threat model or security boundaries described in ARCHITECTURE.md?
