@@ -13,10 +13,10 @@ targets = [
 # Advisories — deny known-vulnerable crates
 # --------------------------------------------------------------------------
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "deny"
-notice = "warn"
+vulnerability = "all"
+unmaintained = "workspace"
+yanked = "all"
+notice = "workspace"
 ignore = []
 
 # --------------------------------------------------------------------------
