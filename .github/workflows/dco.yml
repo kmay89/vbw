@@ -1,0 +1,43 @@
+# =============================================================================
+# DCO Check -- Developer Certificate of Origin
+# =============================================================================
+# Enforces that all commits are signed off per the DCO.
+# https://developercertificate.org/
+
+name: DCO
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  dco:
+    name: DCO Sign-off
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Check DCO sign-off
+        run: |
+          # Verify every commit in this PR has a Signed-off-by line.
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          MISSING=""
+          for SHA in $(git rev-list "$BASE".."$HEAD"); do
+            if ! git log -1 --format='%B' "$SHA" | grep -qE '^Signed-off-by: .+ <.+>'; then
+              MISSING="$MISSING $SHA"
+            fi
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::The following commits are missing DCO sign-off:$MISSING"
+            echo ""
+            echo "All commits must include: Signed-off-by: Your Name <email>"
+            echo "Use: git commit -s"
+            exit 1
+          fi
+          echo "All commits have DCO sign-off."

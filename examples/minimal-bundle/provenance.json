@@ -1,0 +1,36 @@
+{
+  "_type": "https://in-toto.io/Statement/v1",
+  "subject": [
+    {
+      "name": "artifact-placeholder",
+      "digest": {
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+  ],
+  "predicateType": "https://slsa.dev/provenance/v1",
+  "predicate": {
+    "builder": {
+      "id": "https://github.com/actions/runner"
+    },
+    "buildType": "https://github.com/actions/runner@v1",
+    "invocation": {
+      "parameters": {
+        "example": true
+      }
+    },
+    "buildConfig": {},
+    "metadata": {
+      "buildStartedOn": "2026-02-09T00:00:00Z",
+      "buildFinishedOn": "2026-02-09T00:00:01Z"
+    },
+    "materials": [
+      {
+        "uri": "git+https://github.com/example/example@refs/heads/main",
+        "digest": {
+          "sha1": "1111111111111111111111111111111111111111"
+        }
+      }
+    ]
+  }
+}

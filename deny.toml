@@ -1,0 +1,60 @@
+# cargo-deny configuration — supply chain policy enforcement.
+# https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+
+# --------------------------------------------------------------------------
+# Advisories — deny known-vulnerable crates
+# --------------------------------------------------------------------------
+[advisories]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "deny"
+notice = "warn"
+ignore = []
+
+# --------------------------------------------------------------------------
+# Licenses — only allow OSI-approved, permissive licenses
+# --------------------------------------------------------------------------
+[licenses]
+unlicensed = "deny"
+copyleft = "deny"
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+]
+confidence-threshold = 0.8
+
+# --------------------------------------------------------------------------
+# Bans — prevent problematic crates
+# --------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = [
+  # Unmaintained crates with known replacements
+  { name = "openssl", wrappers = [] },
+]
+
+# --------------------------------------------------------------------------
+# Sources — only allow crates.io; no git dependencies in production
+# --------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index", "https://index.crates.io"]
+allow-git = []
