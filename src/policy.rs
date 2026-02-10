@@ -34,6 +34,11 @@ impl Default for VbwPolicy {
 impl VbwPolicy {
     pub fn load(path: Option<&Path>) -> Result<Self> {
         if let Some(p) = path {
+            // NOTE: There is a narrow TOCTOU window between symlink_metadata()
+            // and fs::read() below. Closing it fully would require opening with
+            // O_NOFOLLOW (platform-specific) or fstat on the fd. The current
+            // check is still valuable: it catches accidental symlinks and raises
+            // the bar for exploitation to a filesystem race.
             let meta = fs::symlink_metadata(p).with_context(|| format!("stat {}", p.display()))?;
             if meta.file_type().is_symlink() {
                 return Err(anyhow!(
@@ -129,6 +134,23 @@ mod tests {
     fn test_load_nonexistent_file_fails() {
         let result = VbwPolicy::load(Some(Path::new("/nonexistent/policy.json")));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_rejects_oversized_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let big_file = dir.path().join("huge-policy.json");
+        // Write just over MAX_POLICY_BYTES (1 MB + 1 byte).
+        let data = vec![b' '; (MAX_POLICY_BYTES as usize) + 1];
+        std::fs::write(&big_file, &data).unwrap();
+
+        let result = VbwPolicy::load(Some(&big_file));
+        assert!(result.is_err(), "oversized policy files must be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("too large"),
+            "error should mention size: {err}"
+        );
     }
 
     #[cfg(unix)]
