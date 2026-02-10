@@ -1,9 +1,8 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::Path};
+use std::path::Path;
 
-/// Maximum policy file size (1 MB). Policy files are small JSON; anything
-/// larger is almost certainly not a legitimate policy.
+/// Maximum policy file size (1 MB).
 const MAX_POLICY_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,31 +32,12 @@ impl Default for VbwPolicy {
 
 impl VbwPolicy {
     pub fn load(path: Option<&Path>) -> Result<Self> {
-        if let Some(p) = path {
-            // NOTE: There is a narrow TOCTOU window between symlink_metadata()
-            // and fs::read() below. Closing it fully would require opening with
-            // O_NOFOLLOW (platform-specific) or fstat on the fd. The current
-            // check is still valuable: it catches accidental symlinks and raises
-            // the bar for exploitation to a filesystem race.
-            let meta = fs::symlink_metadata(p).with_context(|| format!("stat {}", p.display()))?;
-            if meta.file_type().is_symlink() {
-                return Err(anyhow!(
-                    "Refusing to read symlink policy file: {}",
-                    p.display()
-                ));
+        match path {
+            Some(p) => {
+                serde_json::from_slice(&crate::fs_guard::read_validated(p, MAX_POLICY_BYTES)?)
+                    .map_err(Into::into)
             }
-            if meta.len() > MAX_POLICY_BYTES {
-                return Err(anyhow!(
-                    "Policy file too large: {} ({} bytes, max {} bytes)",
-                    p.display(),
-                    meta.len(),
-                    MAX_POLICY_BYTES
-                ));
-            }
-            let bytes = fs::read(p).with_context(|| format!("read policy {}", p.display()))?;
-            Ok(serde_json::from_slice(&bytes)?)
-        } else {
-            Ok(Self::default())
+            None => Ok(Self::default()),
         }
     }
 }
