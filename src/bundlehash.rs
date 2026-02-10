@@ -228,23 +228,34 @@ mod tests {
     fn test_propagates_walkdir_errors() {
         use std::os::unix::fs::PermissionsExt;
 
+        /// RAII guard that restores directory permissions on drop, ensuring
+        /// cleanup even if the test panics.
+        struct PermissionsGuard<'a> {
+            path: &'a std::path::Path,
+        }
+
+        impl Drop for PermissionsGuard<'_> {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(self.path, fs::Permissions::from_mode(0o755));
+            }
+        }
+
         let dir = TempDir::new().unwrap();
         let subdir = dir.path().join("locked");
         fs::create_dir(&subdir).unwrap();
         fs::write(subdir.join("secret.txt"), b"data").unwrap();
-        // Remove read permission from subdirectory.
+
+        // Guard ensures permissions are restored even on panic.
+        let _guard = PermissionsGuard { path: &subdir };
         fs::set_permissions(&subdir, fs::Permissions::from_mode(0o000)).unwrap();
 
         // If we can still read the directory (e.g. running as root), skip.
         if fs::read_dir(&subdir).is_ok() {
-            let _ = fs::set_permissions(&subdir, fs::Permissions::from_mode(0o755));
             eprintln!("skipping test_propagates_walkdir_errors: permissions not enforced (root?)");
             return;
         }
 
         let result = hash_bundle(dir.path());
-        // Restore permissions for cleanup.
-        let _ = fs::set_permissions(&subdir, fs::Permissions::from_mode(0o755));
         assert!(
             result.is_err(),
             "WalkDir errors must propagate, not be silently ignored"
