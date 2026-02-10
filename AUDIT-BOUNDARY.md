@@ -292,26 +292,76 @@ would improve automation. This is identified as a future enhancement.
 
 ---
 
+## RustSec Compliance Posture
+
+VBW's dependency and code hygiene are designed to produce a clean result
+against the [RustSec Advisory Database](https://rustsec.org/) and align
+with [Google's `cargo vet` auditing standards](https://github.com/google/rust-crate-audits/blob/main/auditing_standards.md).
+
+### Automated Enforcement
+
+| Check | Tool | Config File | Frequency |
+|-------|------|------------|-----------|
+| Known CVEs | `cargo-audit` | `.cargo/audit.toml` | Every PR + daily |
+| Advisories + unmaintained | `cargo-deny advisories` | `deny.toml` | Every PR + daily |
+| License compliance | `cargo-deny licenses` | `deny.toml` | Every PR + daily |
+| Crate bans (openssl) | `cargo-deny bans` | `deny.toml` | Every PR + daily |
+| Registry restrictions | `cargo-deny sources` | `deny.toml` | Every PR + daily |
+| Dependency updates | Dependabot | `.github/dependabot.yml` | Weekly |
+
+### UB-Risk Classification
+
+Per Google's auditing standards, VBW rates as **ub-risk-0**:
+
+- Zero `unsafe` code blocks (enforced by `#![forbid(unsafe_code)]` in
+  `Cargo.toml` -- cannot be overridden with `#[allow]`)
+- No FFI (OpenSSL and `openssl-sys` are explicitly banned in `deny.toml`)
+- No raw pointer usage, no transmute, no union types
+- All dependencies are pure Rust from crates.io
+
+### Lint Enforcement
+
+The following security-critical lints are enforced in `Cargo.toml`:
+
+| Lint | Level | Purpose |
+|------|-------|---------|
+| `unsafe_code` | `forbid` | No unsafe blocks anywhere |
+| `missing_docs` | `warn` | Public API documentation coverage |
+| `clippy::unwrap_used` | `deny` | No `.unwrap()` in production code |
+| `clippy::expect_used` | `warn` | Flag `.expect()` for review |
+| `clippy::panic` | `warn` | Flag `panic!()` macro for review |
+| `clippy::indexing_slicing` | `warn` | Flag unchecked indexing for review |
+| `clippy::pedantic` | `warn` | Comprehensive code quality |
+
+In CI, `RUSTFLAGS="-D warnings"` turns all warnings into errors, ensuring
+none of the above are silently ignored.
+
+---
+
 ## Recommended Audit Procedure
 
 For the fastest path to a complete audit:
 
 1. **Start with this document.** It scopes the audit to ~1,300 lines of Rust.
-2. **Read `ARCHITECTURE.md`** for the threat model.
-3. **Read `SECURITY.md`** for the vulnerability disclosure process.
-4. **Audit `src/` modules in this order:**
-   - `fs_guard.rs` (23 lines) -- filesystem guard (TOCTOU surface)
-   - `policy.rs` (156 lines) -- policy model, delegates I/O to fs_guard
-   - `independence.rs` (227 lines) -- core VBW value-add, regex review
-   - `bundlehash.rs` (269 lines) -- hashing and file traversal
-   - `attest.rs` (110 lines) -- attestation structure
-   - `main.rs` (576 lines) -- orchestration, subprocess calls, I/O
+2. **Read `ARCHITECTURE.md`** for the data flow, threat model, and
+   cryptographic inventory.
+3. **Read `SECURITY.md`** for the vulnerability disclosure process and
+   security control inventory.
+4. **Audit `src/` modules in this order** (dependency order -- each module
+   only depends on modules listed before it):
+   - `fs_guard.rs` (~25 lines) -- filesystem guard (TOCTOU surface)
+   - `policy.rs` (~55 lines code + tests) -- policy model, delegates I/O to fs_guard
+   - `independence.rs` (~110 lines code + tests) -- core VBW value-add, regex review
+   - `bundlehash.rs` (~130 lines code + tests) -- hashing and file traversal
+   - `attest.rs` (~30 lines code + tests) -- attestation structure
+   - `main.rs` (~580 lines) -- orchestration, subprocess calls, I/O
+   - `lib.rs` (~50 lines) -- module exports and crate documentation
 5. **Run `make check`** to verify all quality gates pass.
 6. **Run `make verify-example`** for an end-to-end smoke test.
 7. **Review CI/CD workflows** in `.github/workflows/` for supply chain
-   integrity.
-8. **Review `deny.toml`** for dependency policy.
-9. **Run `cargo tree`** to inspect the full dependency graph.
-
-**Estimated audit duration for a senior security engineer:** 2-3 days for
-full code review + 1 day for CI/CD and dependency review.
+   integrity (all actions are SHA-pinned).
+8. **Review `deny.toml`** for dependency policy (licenses, bans, advisories,
+   sources).
+9. **Review `.cargo/audit.toml`** for cargo-audit configuration.
+10. **Run `cargo tree`** to inspect the full dependency graph.
+11. **Run `cargo audit`** to verify zero known vulnerabilities.

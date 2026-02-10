@@ -52,17 +52,28 @@ debug = true
 
 [lints.rust]
 unsafe_code = "forbid"
+# Auditors expect all public items to be documented.
+missing_docs = "warn"
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-# Allowed pedantic lints — intentional style choices for this codebase
-module_name_repetitions = "allow"
-must_use_candidate = "allow"
-missing_errors_doc = "allow"
-missing_panics_doc = "allow"
-struct_excessive_bools = "allow"
-needless_pass_by_value = "allow"
-too_many_lines = "allow"
-if_not_else = "allow"
-items_after_statements = "allow"
-uninlined_format_args = "allow"
+
+# Security-critical lints — RustSec best-practice enforcement.
+# These prevent panic-inducing patterns in production paths.
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "warn"
+indexing_slicing = "warn"
+
+# Allowed pedantic lints — intentional style choices for this codebase.
+# Each is documented to show the auditor it was a deliberate decision.
+module_name_repetitions = "allow"   # VBW modules are small; repetition aids grep-ability
+must_use_candidate = "allow"        # Not all return values need #[must_use] in a CLI
+missing_errors_doc = "allow"        # Error types are self-documenting via anyhow
+missing_panics_doc = "allow"        # Panics are forbidden in production paths (see unwrap_used)
+struct_excessive_bools = "allow"    # VbwPolicy uses bools by design (matches JSON schema)
+needless_pass_by_value = "allow"    # Clap derive requires owned types
+too_many_lines = "allow"            # verify_bundle is long but linear; splitting harms readability
+if_not_else = "allow"               # Negative-first branches are clearer in some security checks
+items_after_statements = "allow"    # collect_key_paths is defined near its single call site
+uninlined_format_args = "allow"     # Explicit format args are clearer in error messages

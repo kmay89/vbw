@@ -1,0 +1,27 @@
+# cargo-audit configuration — RustSec advisory database scanning.
+# https://rustsec.org/
+#
+# This file configures `cargo audit` for VBW's security requirements.
+# Run locally: `cargo audit` or `make audit`
+# CI runs this on every PR and daily via scheduled workflow.
+
+[advisories]
+# Treat unmaintained crates as denial — a security tool must not depend
+# on abandoned code that will never receive vulnerability patches.
+unmaintained = "deny"
+
+# Treat yanked crate versions as denial — yanked versions are typically
+# pulled due to security issues or critical bugs.
+yanked = "deny"
+
+# Show the inverse dependency tree for each advisory so the auditor can
+# see the full chain from VBW to the affected crate.
+informational_warnings = ["unsound", "notice"]
+
+# No advisories are currently ignored. If a false positive arises, add
+# the advisory ID here with an explicit justification.
+ignore = []
+
+[output]
+# Display dependency tree alongside each advisory for traceability.
+show_tree = true
