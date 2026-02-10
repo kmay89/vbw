@@ -248,7 +248,10 @@ mod tests {
 
         // Guard ensures permissions are restored even on panic.
         let original_permissions = fs::metadata(&subdir).unwrap().permissions();
-        let _guard = PermissionsGuard { path: &subdir, original_permissions };
+        let _guard = PermissionsGuard {
+            path: &subdir,
+            original_permissions,
+        };
         fs::set_permissions(&subdir, fs::Permissions::from_mode(0o000)).unwrap();
 
         // If we can still read the directory (e.g. running as root), skip.
