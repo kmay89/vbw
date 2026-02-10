@@ -232,11 +232,12 @@ mod tests {
         /// cleanup even if the test panics.
         struct PermissionsGuard<'a> {
             path: &'a std::path::Path,
+            original_permissions: std::fs::Permissions,
         }
 
         impl Drop for PermissionsGuard<'_> {
             fn drop(&mut self) {
-                let _ = fs::set_permissions(self.path, fs::Permissions::from_mode(0o755));
+                let _ = fs::set_permissions(self.path, self.original_permissions.clone());
             }
         }
 
@@ -246,7 +247,8 @@ mod tests {
         fs::write(subdir.join("secret.txt"), b"data").unwrap();
 
         // Guard ensures permissions are restored even on panic.
-        let _guard = PermissionsGuard { path: &subdir };
+        let original_permissions = fs::metadata(&subdir).unwrap().permissions();
+        let _guard = PermissionsGuard { path: &subdir, original_permissions };
         fs::set_permissions(&subdir, fs::Permissions::from_mode(0o000)).unwrap();
 
         // If we can still read the directory (e.g. running as root), skip.
