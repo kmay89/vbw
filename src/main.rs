@@ -21,6 +21,10 @@ const MAX_JSON_BYTES: u64 = 20 * 1024 * 1024; // 20MB
 const MAX_TOOL_ERR_BYTES: usize = 8 * 1024; // 8KB
 
 fn read_file_limited(path: &Path, max: u64) -> Result<Vec<u8>> {
+    // NOTE: There is a narrow TOCTOU window between symlink_metadata() and
+    // fs::read(). Fully closing it would require O_NOFOLLOW or fstat on the
+    // fd. The check still catches accidental symlinks and raises the bar for
+    // exploitation.
     let meta = fs::symlink_metadata(path).with_context(|| format!("stat {}", path.display()))?;
     if meta.file_type().is_symlink() {
         return Err(anyhow!("Refusing to read symlink: {}", path.display()));

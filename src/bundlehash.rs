@@ -47,11 +47,11 @@ pub fn hash_bundle(bundle_dir: &Path) -> Result<(String, Value)> {
     let mut files = Vec::new();
     let mut total_size: u64 = 0;
 
-    for e in WalkDir::new(bundle_dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-    {
+    for entry in WalkDir::new(bundle_dir).follow_links(false) {
+        // Never silently swallow WalkDir errors. For a security tool,
+        // skipping unreadable entries would produce an incomplete hash
+        // and could be exploited to exclude files from verification.
+        let e = entry?;
         // Symlink defense: with follow_links(false), WalkDir reports symlinks
         // as their own entry type. Reject them before any other processing.
         if e.path_is_symlink() {
@@ -193,6 +193,22 @@ mod tests {
         assert!(files[0]["sha256"].as_str().unwrap().len() == 64);
     }
 
+    #[test]
+    fn test_sha256_file_streaming_rejects_oversized() {
+        let dir = TempDir::new().unwrap();
+        let big = dir.path().join("big.bin");
+        // Write 1025 bytes but set max to 1024
+        fs::write(&big, vec![0u8; 1025]).unwrap();
+
+        let result = sha256_file_streaming(&big, 1024);
+        assert!(result.is_err(), "files over max_size must be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("too large"),
+            "error should mention size: {err}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_rejects_symlink_in_bundle() {
@@ -205,5 +221,33 @@ mod tests {
         assert!(result.is_err(), "symlinks must be rejected");
         let err = result.unwrap_err().to_string();
         assert!(err.contains("symlink"), "error should mention symlink");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_propagates_walkdir_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let subdir = dir.path().join("locked");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("secret.txt"), b"data").unwrap();
+        // Remove read permission from subdirectory.
+        fs::set_permissions(&subdir, fs::Permissions::from_mode(0o000)).unwrap();
+
+        // If we can still read the directory (e.g. running as root), skip.
+        if fs::read_dir(&subdir).is_ok() {
+            let _ = fs::set_permissions(&subdir, fs::Permissions::from_mode(0o755));
+            eprintln!("skipping test_propagates_walkdir_errors: permissions not enforced (root?)");
+            return;
+        }
+
+        let result = hash_bundle(dir.path());
+        // Restore permissions for cleanup.
+        let _ = fs::set_permissions(&subdir, fs::Permissions::from_mode(0o755));
+        assert!(
+            result.is_err(),
+            "WalkDir errors must propagate, not be silently ignored"
+        );
     }
 }
