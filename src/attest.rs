@@ -17,6 +17,7 @@ pub fn make_vbw_statement(
         ],
         "predicateType": "https://scqcs.dev/vbw/predicate/v1",
         "predicate": {
+            "vbw_version": env!("CARGO_PKG_VERSION"),
             "verifiedAt": ts,
             "results": {
                 "slsa": { "ok": slsa_ok },
@@ -92,5 +93,18 @@ mod tests {
             make_vbw_statement("abc", &evidence, true, true, &json!({"overall": "pass"})).unwrap();
 
         assert_eq!(stmt["predicate"]["evidence"], evidence);
+    }
+
+    #[test]
+    fn test_predicate_contains_vbw_version() {
+        let stmt =
+            make_vbw_statement("abc", &json!({}), true, true, &json!({"overall": "pass"})).unwrap();
+
+        let version = stmt["predicate"]["vbw_version"].as_str().unwrap();
+        assert!(
+            !version.is_empty(),
+            "attestation predicate must include the VBW version that produced it"
+        );
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
     }
 }

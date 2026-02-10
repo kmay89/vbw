@@ -12,7 +12,7 @@ policy failure. VBW never touches credentials and cannot leak what it never sees
 |-------|-------------|
 | CI | `cargo fmt` + `clippy` + `test` + `audit` + `deny` |
 | License | Apache-2.0 |
-| MSRV | 1.78.0 |
+| MSRV | 1.88.0 |
 
 ## Quick Start
 
@@ -127,6 +127,7 @@ This repository follows banking-grade operational standards:
 ## Documentation
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) -- Composition model and threat boundaries
+- [`AUDIT-BOUNDARY.md`](AUDIT-BOUNDARY.md) -- IP delineation and third-party audit scope
 - [`SECURITY.md`](SECURITY.md) -- Vulnerability disclosure and security model
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) -- Contribution guidelines and quality requirements
 - [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) -- Community standards
