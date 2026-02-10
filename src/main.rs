@@ -11,6 +11,7 @@ use time::format_description::well_known::Rfc3339;
 
 mod attest;
 mod bundlehash;
+mod fs_guard;
 mod independence;
 mod policy;
 
@@ -20,24 +21,16 @@ use policy::VbwPolicy;
 const MAX_JSON_BYTES: u64 = 20 * 1024 * 1024; // 20MB
 const MAX_TOOL_ERR_BYTES: usize = 8 * 1024; // 8KB
 
-fn read_file_limited(path: &Path, max: u64) -> Result<Vec<u8>> {
-    // NOTE: There is a narrow TOCTOU window between symlink_metadata() and
-    // fs::read(). Fully closing it would require O_NOFOLLOW or fstat on the
-    // fd. The check still catches accidental symlinks and raises the bar for
-    // exploitation.
-    let meta = fs::symlink_metadata(path).with_context(|| format!("stat {}", path.display()))?;
-    if meta.file_type().is_symlink() {
-        return Err(anyhow!("Refusing to read symlink: {}", path.display()));
-    }
-    if meta.len() > max {
+/// Runs an external tool, returning an error with sanitized stderr on failure.
+fn run_checked(cmd: &mut Command, name: &str) -> Result<()> {
+    let out = cmd.output().with_context(|| format!("running {name}"))?;
+    if !out.status.success() {
         return Err(anyhow!(
-            "File too large: {} ({} bytes, max {} bytes)",
-            path.display(),
-            meta.len(),
-            max
+            "{name} failed: {}",
+            sanitize_tool_stderr(&out.stderr)
         ));
     }
-    fs::read(path).with_context(|| format!("read {}", path.display()))
+    Ok(())
 }
 
 fn sanitize_tool_stderr(stderr: &[u8]) -> String {
@@ -230,11 +223,7 @@ fn verify_bundle(
     // Load policy
     let policy_file = policy_path.or_else(|| {
         let p = bundle_dir.join("vbw-policy.json");
-        if p.exists() {
-            Some(p)
-        } else {
-            None
-        }
+        p.exists().then_some(p)
     });
     let policy = VbwPolicy::load(policy_file.as_deref())?;
 
@@ -271,7 +260,7 @@ fn verify_bundle(
             }
             SlsaMode::SchemaOnly => {
                 let _v: Value =
-                    serde_json::from_slice(&read_file_limited(&prov_path, MAX_JSON_BYTES)?)?;
+                    serde_json::from_slice(&fs_guard::read_validated(&prov_path, MAX_JSON_BYTES)?)?;
                 slsa_detail = serde_json::json!({
                     "mode": "schema-only",
                     "note": "Only JSON parse performed (no artifact verification)"
@@ -332,90 +321,79 @@ fn verify_bundle(
                 ));
             }
             Ok(out)
-        } else {
-            let md = fs::symlink_metadata(&base)?;
-            if md.file_type().is_symlink() {
-                return Err(anyhow!(
-                    "Refusing to read symlink key file: {}",
-                    base.display()
-                ));
-            }
-            if !md.is_file() {
-                return Err(anyhow!("Key path is not a file: {}", base.display()));
-            }
+        } else if base.is_file() {
+            // canonicalize() already resolved symlinks; no further check needed.
             Ok(vec![base])
+        } else {
+            Err(anyhow!(
+                "Key path is not a file or directory: {}",
+                base.display()
+            ))
         }
     }
 
-    if !no_external {
-        if let Some(keys_path) = &intoto_layout_keys {
-            let key_paths = collect_key_paths(keys_path)?;
-            if key_paths.is_empty() {
+    let crypto_intoto = !no_external && intoto_layout_keys.is_some();
+
+    if crypto_intoto {
+        let keys_path = intoto_layout_keys.as_ref().unwrap();
+        let key_paths = collect_key_paths(keys_path)?;
+        if key_paths.is_empty() {
+            intoto_ok = false;
+            intoto_detail = serde_json::json!({
+                "mode": "cryptographic",
+                "error": format!("No key files found at {}", keys_path.display())
+            });
+        } else {
+            let mut cmd = Command::new("in-toto-verify");
+            cmd.arg("--layout")
+                .arg(&layout_path)
+                .arg("--link-dir")
+                .arg(&links)
+                .arg("--verification-keys");
+            for kp in &key_paths {
+                cmd.arg(kp);
+            }
+            let out = cmd
+                .current_dir(bundle_dir)
+                .output()
+                .context("running in-toto-verify")?;
+            if !out.status.success() {
                 intoto_ok = false;
                 intoto_detail = serde_json::json!({
                     "mode": "cryptographic",
-                    "error": format!("No key files found at {}", keys_path.display())
+                    "error": sanitize_tool_stderr(&out.stderr)
                 });
             } else {
-                let mut cmd = Command::new("in-toto-verify");
-                cmd.arg("--layout")
-                    .arg(&layout_path)
-                    .arg("--link-dir")
-                    .arg(&links)
-                    .arg("--verification-keys");
-                for kp in &key_paths {
-                    cmd.arg(kp);
-                }
-                let out = cmd
-                    .current_dir(bundle_dir)
-                    .output()
-                    .context("running in-toto-verify")?;
-                if !out.status.success() {
-                    intoto_ok = false;
-                    intoto_detail = serde_json::json!({
-                        "mode": "cryptographic",
-                        "error": sanitize_tool_stderr(&out.stderr)
-                    });
-                } else {
-                    intoto_detail = serde_json::json!({
-                        "mode": "cryptographic",
-                        "keys": key_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
-                    });
-                }
-            }
-        } else {
-            // Structural-only: ensure files exist and JSON parses.
-            if !links.exists() {
-                intoto_ok = false;
                 intoto_detail = serde_json::json!({
-                    "mode": "structural-only",
-                    "error": "links/ missing",
-                    "warning": "No in-toto layout keys provided; signatures not verified"
-                });
-            } else {
-                let _v: Value =
-                    serde_json::from_slice(&read_file_limited(&layout_path, MAX_JSON_BYTES)?)?;
-                intoto_detail = serde_json::json!({
-                    "mode": "structural-only",
-                    "warning": "No in-toto layout keys provided; signatures not verified"
+                    "mode": "cryptographic",
+                    "keys": key_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
                 });
             }
         }
+    } else if !links.exists() {
+        // Structural-only: links dir missing is a blocking failure.
+        intoto_ok = false;
+        intoto_detail = if no_external {
+            serde_json::json!({"mode": "structural-only", "error": "links/ missing"})
+        } else {
+            serde_json::json!({"mode": "structural-only", "error": "links/ missing",
+                "warning": "No in-toto layout keys provided; signatures not verified"})
+        };
     } else {
-        // no_external: structural-only checks
-        if !links.exists() {
-            intoto_ok = false;
-            intoto_detail =
-                serde_json::json!({"mode": "structural-only", "error": "links/ missing"});
+        // Structural-only: ensure layout JSON parses.
+        let _v: Value =
+            serde_json::from_slice(&fs_guard::read_validated(&layout_path, MAX_JSON_BYTES)?)?;
+        intoto_detail = if no_external {
+            serde_json::json!({"mode": "structural-only", "skipped": true})
         } else {
-            let _v: Value =
-                serde_json::from_slice(&read_file_limited(&layout_path, MAX_JSON_BYTES)?)?;
-            intoto_detail = serde_json::json!({"mode": "structural-only", "skipped": true});
-        }
+            serde_json::json!({"mode": "structural-only",
+                "warning": "No in-toto layout keys provided; signatures not verified"})
+        };
     }
 
     // --- VBW independence checks
-    let prov_json: Value = serde_json::from_slice(&read_file_limited(&prov_path, MAX_JSON_BYTES)?)?;
+    let prov_json: Value =
+        serde_json::from_slice(&fs_guard::read_validated(&prov_path, MAX_JSON_BYTES)?)?;
     let indep = independence::check_independence(&prov_json, &policy)?;
 
     // --- Bundle hash
@@ -431,21 +409,19 @@ fn verify_bundle(
     let overall_pass = slsa_ok && intoto_ok && indep["overall"] == "pass";
     let result = if overall_pass { "PASS" } else { "FAIL" };
 
-    let empty_arr = Vec::new();
-
-    let failures = indep["blocking_failures"]
+    let failures: Vec<String> = indep["blocking_failures"]
         .as_array()
-        .unwrap_or(&empty_arr)
-        .iter()
+        .into_iter()
+        .flatten()
         .filter_map(|v| v.as_str().map(ToString::to_string))
-        .collect::<Vec<_>>();
+        .collect();
 
-    let warnings = indep["warnings"]
+    let warnings: Vec<String> = indep["warnings"]
         .as_array()
-        .unwrap_or(&empty_arr)
-        .iter()
+        .into_iter()
+        .flatten()
         .filter_map(|v| v.as_str().map(ToString::to_string))
-        .collect::<Vec<_>>();
+        .collect();
 
     let report = serde_json::json!({
         "report_schema": "https://scqcs.dev/vbw/report/v1",
@@ -483,36 +459,20 @@ fn verify_bundle(
     // --- Sign with Sigstore
     let bundle_path = vbw_out_dir.join("vbw-attestation.sigstore.bundle");
     if !no_external {
-        let out = Command::new("cosign")
-            .arg("sign-blob")
-            .arg("--yes")
-            .arg("--bundle")
-            .arg(&bundle_path)
-            .arg(&att_path)
-            .output()
-            .context("running cosign sign-blob")?;
-
-        if !out.status.success() {
-            return Err(anyhow!(
-                "cosign sign-blob failed: {}",
-                sanitize_tool_stderr(&out.stderr)
-            ));
-        }
-
-        let outv = Command::new("cosign")
-            .arg("verify-blob")
-            .arg("--bundle")
-            .arg(&bundle_path)
-            .arg(&att_path)
-            .output()
-            .context("running cosign verify-blob")?;
-
-        if !outv.status.success() {
-            return Err(anyhow!(
-                "cosign verify-blob failed: {}",
-                sanitize_tool_stderr(&outv.stderr)
-            ));
-        }
+        run_checked(
+            Command::new("cosign")
+                .args(["sign-blob", "--yes", "--bundle"])
+                .arg(&bundle_path)
+                .arg(&att_path),
+            "cosign sign-blob",
+        )?;
+        run_checked(
+            Command::new("cosign")
+                .args(["verify-blob", "--bundle"])
+                .arg(&bundle_path)
+                .arg(&att_path),
+            "cosign verify-blob",
+        )?;
     }
 
     // --- Summary output
@@ -551,7 +511,8 @@ fn verify_bundle(
 }
 
 fn show_attestation(attestation: &Path, sigstore_bundle: &Path) -> Result<()> {
-    let att: Value = serde_json::from_slice(&read_file_limited(attestation, MAX_JSON_BYTES)?)?;
+    let att: Value =
+        serde_json::from_slice(&fs_guard::read_validated(attestation, MAX_JSON_BYTES)?)?;
 
     let outv = Command::new("cosign")
         .arg("verify-blob")
