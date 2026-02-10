@@ -141,6 +141,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let big_file = dir.path().join("huge-policy.json");
         // Write just over MAX_POLICY_BYTES (1 MB + 1 byte).
+        #[allow(clippy::cast_possible_truncation)]
         let data = vec![b' '; (MAX_POLICY_BYTES as usize) + 1];
         std::fs::write(&big_file, &data).unwrap();
 
