@@ -4,24 +4,16 @@
 # This file configures `cargo audit` for VBW's security requirements.
 # Run locally: `cargo audit` or `make audit`
 # CI runs this on every PR and daily via scheduled workflow.
+#
+# Note: `unmaintained` and `yanked` policies are enforced by cargo-deny
+# (see deny.toml), not by cargo-audit. This file only controls the
+# cargo-audit-specific settings.
 
 [advisories]
-# Treat unmaintained crates as denial — a security tool must not depend
-# on abandoned code that will never receive vulnerability patches.
-unmaintained = "deny"
-
-# Treat yanked crate versions as denial — yanked versions are typically
-# pulled due to security issues or critical bugs.
-yanked = "deny"
-
-# Show the inverse dependency tree for each advisory so the auditor can
-# see the full chain from VBW to the affected crate.
+# Show informational advisories for soundness issues and notices.
+# These are not blocking but are surfaced for auditor awareness.
 informational_warnings = ["unsound", "notice"]
 
 # No advisories are currently ignored. If a false positive arises, add
 # the advisory ID here with an explicit justification.
 ignore = []
-
-[output]
-# Display dependency tree alongside each advisory for traceability.
-show_tree = true

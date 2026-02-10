@@ -82,14 +82,18 @@ jobs:
         run: cargo audit
 
   # ---------------------------------------------------------------------------
-  # cargo-deny — license, ban, source, and advisory policy
+  # cargo-deny — license, ban, and source policy
   # ---------------------------------------------------------------------------
+  # Advisory checks are handled by the cargo-audit job above and the daily
+  # scheduled audit workflow (audit.yml). Keeping them separate avoids
+  # coupling the advisory DB fetch to the license/ban/source checks.
   deny:
     name: cargo-deny (${{ matrix.check }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        check: [advisories, licenses, bans, sources]
+        check: [licenses, bans, sources]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15

@@ -75,7 +75,7 @@ If VBW ever requests credentials, private keys, or internal network access: **th
 | Control | Tool | Frequency |
 |---------|------|-----------|
 | Known vulnerability scan | `cargo-audit` | Every PR + daily |
-| Advisory database check | `cargo-deny advisories` | Every PR + daily |
+| Advisory database check | `cargo-deny advisories` | Daily + local (`make deny`) |
 | License allowlist | `cargo-deny licenses` | Every PR + daily |
 | Crate ban list | `cargo-deny bans` | Every PR + daily |
 | Source registry restriction | `cargo-deny sources` | Every PR + daily |

@@ -389,7 +389,7 @@ fn verify_bundle(
     let crypto_intoto = !no_external && intoto_layout_keys.is_some();
 
     if crypto_intoto {
-        // Safe to index: `crypto_intoto` is only true when `intoto_layout_keys.is_some()`.
+        // `crypto_intoto` is true, so `intoto_layout_keys` must be `Some`.
         let Some(keys_path) = intoto_layout_keys.as_ref() else {
             return Err(anyhow!(
                 "internal: layout keys missing after is_some() check"
