@@ -33,10 +33,11 @@ impl Default for VbwPolicy {
 impl VbwPolicy {
     pub fn load(path: Option<&Path>) -> Result<Self> {
         match path {
-            Some(p) => Ok(serde_json::from_slice(&crate::fs_guard::read_validated(
+            Some(p) => serde_json::from_slice(&crate::fs_guard::read_validated(
                 p,
                 MAX_POLICY_BYTES,
-            )?)?),
+            )?)
+            .map_err(Into::into),
             None => Ok(Self::default()),
         }
     }
