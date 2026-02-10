@@ -220,9 +220,7 @@ versions. A future enhancement could capture `--version` output from each tool.
 | Code | Meaning |
 |------|---------|
 | `0` | Verification passed. All checks (SLSA, in-toto, independence) succeeded. |
-| `1` | Verification failed. At least one check failed. See `report.json` for details. |
-| `1` | Input error. Missing required files, invalid JSON, oversized inputs, etc. |
-| `1` | Tool error. An external tool failed to execute or returned an error. |
+| `1` | Verification failed, input error, or tool error. See `report.json` for details. |
 
 **Note:** Currently all failure modes produce exit code 1 (Rust's `anyhow`
 default for `main() -> Result<()>`). For factory integration, a more granular

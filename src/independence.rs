@@ -8,17 +8,9 @@ use serde_json::{json, Value};
 /// fooled by values that happen to contain the text "sha256".
 fn json_has_digest_key(v: &Value) -> bool {
     match v {
-        Value::Object(map) => {
-            for (key, val) in map {
-                if key == "sha256" || key == "digest" {
-                    return true;
-                }
-                if json_has_digest_key(val) {
-                    return true;
-                }
-            }
-            false
-        }
+        Value::Object(map) => map
+            .iter()
+            .any(|(key, val)| key == "sha256" || key == "digest" || json_has_digest_key(val)),
         Value::Array(arr) => arr.iter().any(json_has_digest_key),
         _ => false,
     }
