@@ -28,7 +28,7 @@ jobs:
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
           MISSING=""
-          for SHA in $(git rev-list "$BASE".."$HEAD"); do
+          for SHA in $(git rev-list --no-merges "$BASE".."$HEAD"); do
             if ! git log -1 --format='%B' "$SHA" | grep -qE '^Signed-off-by: .+ <.+>'; then
               MISSING="$MISSING $SHA"
             fi
