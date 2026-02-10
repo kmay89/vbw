@@ -448,6 +448,7 @@ fn verify_bundle(
         .collect::<Vec<_>>();
 
     let report = serde_json::json!({
+        "report_schema": "https://scqcs.dev/vbw/report/v1",
         "vbw_version": env!("CARGO_PKG_VERSION"),
         "bundle_dir": bundle_dir.display().to_string(),
         "bundle_sha256": bundle_sha256,

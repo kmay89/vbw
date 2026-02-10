@@ -3,6 +3,19 @@ use anyhow::Result;
 use regex::Regex;
 use serde_json::{json, Value};
 
+/// Recursively checks whether any JSON *object key* in the tree is "sha256"
+/// or "digest". Unlike a string search on serialized JSON, this cannot be
+/// fooled by values that happen to contain the text "sha256".
+fn json_has_digest_key(v: &Value) -> bool {
+    match v {
+        Value::Object(map) => map
+            .iter()
+            .any(|(key, val)| key == "sha256" || key == "digest" || json_has_digest_key(val)),
+        Value::Array(arr) => arr.iter().any(json_has_digest_key),
+        _ => false,
+    }
+}
+
 pub fn check_independence(prov: &Value, policy: &VbwPolicy) -> Result<Value> {
     let s = prov.to_string();
 
@@ -75,11 +88,8 @@ pub fn check_independence(prov: &Value, policy: &VbwPolicy) -> Result<Value> {
         }
     }
 
-    if policy.require_digests {
-        let has_digests = s.contains("\"sha256\"") || s.contains("\"digest\"");
-        if !has_digests {
-            blocking_failures.push("missing_digests".to_string());
-        }
+    if policy.require_digests && !json_has_digest_key(prov) {
+        blocking_failures.push("missing_digests".to_string());
     }
 
     let overall = if blocking_failures.is_empty() {
@@ -170,5 +180,48 @@ mod tests {
             .as_array()
             .unwrap()
             .contains(&json!("missing_digests")));
+    }
+
+    #[test]
+    fn test_digest_in_value_does_not_satisfy_requirement() {
+        // A JSON *value* containing "sha256" must NOT satisfy the digest
+        // requirement. Only an object *key* named "sha256" or "digest" counts.
+        let prov = json!({
+            "predicate": {
+                "builder": {"id": "https://github.com/actions/runner"},
+                "description": "this build uses sha256 hashing"
+            }
+        });
+        let policy = VbwPolicy::default();
+        let result = check_independence(&prov, &policy).unwrap();
+        assert!(
+            result["blocking_failures"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("missing_digests")),
+            "string 'sha256' in a value must not satisfy the digest key requirement"
+        );
+    }
+
+    #[test]
+    fn test_digest_as_key_satisfies_requirement() {
+        let prov = json!({
+            "predicate": {
+                "builder": {"id": "https://github.com/actions/runner"}
+            },
+            "subject": [{"digest": {"sha256": "abcdef1234567890"}}]
+        });
+        let policy = VbwPolicy {
+            builder_allowlist_is_warning: true,
+            ..VbwPolicy::default()
+        };
+        let result = check_independence(&prov, &policy).unwrap();
+        assert!(
+            !result["blocking_failures"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("missing_digests")),
+            "a real 'digest'/'sha256' key must satisfy the requirement"
+        );
     }
 }
