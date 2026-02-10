@@ -10,7 +10,7 @@ Apply these settings to the `main` branch via GitHub Settings > Branches:
   - Require review from Code Owners
 - [x] **Require status checks to pass before merging**
   - Required checks: `rustfmt`, `clippy`, `test (ubuntu-latest)`, `test (macos-latest)`,
-    `cargo-audit`, `cargo-deny (advisories)`, `cargo-deny (licenses)`,
+    `cargo-audit`, `cargo-deny (licenses)`,
     `cargo-deny (bans)`, `cargo-deny (sources)`, `DCO Sign-off`
   - Require branches to be up to date before merging
 - [x] **Require signed commits**

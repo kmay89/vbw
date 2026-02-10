@@ -2,7 +2,7 @@
 name = "vbw"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.78.0"
+rust-version = "1.88.0"
 authors = ["SCQCS Initiative"]
 license = "Apache-2.0"
 description = "Verified Build Witness - Zero-knowledge build integrity verification"
@@ -27,7 +27,7 @@ sha2 = "0.10"
 hex = "0.4"
 walkdir = "2"
 regex = "1"
-time = { version = ">=0.3, <0.3.37", features = ["formatting"] }
+time = { version = ">=0.3.47, <0.4", features = ["formatting"] }
 
 [dev-dependencies]
 tempfile = "3"

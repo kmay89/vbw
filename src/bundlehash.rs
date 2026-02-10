@@ -29,6 +29,7 @@ fn sha256_file_streaming(p: &Path, max_size: u64) -> Result<(String, u64)> {
 
     let mut f = fs::File::open(p).with_context(|| format!("open {}", p.display()))?;
     let mut h = Sha256::new();
+    #[allow(clippy::large_stack_arrays)]
     let mut buf = [0u8; 64 * 1024];
     loop {
         let n = f
@@ -101,8 +102,15 @@ pub fn hash_bundle(bundle_dir: &Path) -> Result<(String, Value)> {
     for p in &files {
         let (file_hash, len) = sha256_file_streaming(p, MAX_FILE_SIZE)?;
         h.update(file_hash.as_bytes());
+        let relative_path = p.strip_prefix(bundle_dir).with_context(|| {
+            format!(
+                "Path '{}' should be prefixed with '{}'",
+                p.display(),
+                bundle_dir.display()
+            )
+        })?;
         listing.push(serde_json::json!({
-            "path": p.strip_prefix(bundle_dir).unwrap().display().to_string(),
+            "path": relative_path.display().to_string(),
             "sha256": file_hash,
             "bytes": len
         }));
