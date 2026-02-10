@@ -41,8 +41,8 @@ test: ## Run all tests (debug + release)
 audit: ## Run security audit
 	cargo audit
 
-deny: ## Run cargo-deny checks (licenses, bans, advisories, sources)
-	cargo deny check
+deny: ## Run cargo-deny checks (licenses, bans, sources)
+	cargo deny check licenses bans sources
 
 check: fmt clippy test audit deny ## Run all quality gates (full CI equivalent)
 
