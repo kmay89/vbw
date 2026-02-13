@@ -1,3 +1,34 @@
+//! VBW CLI binary -- Verified Build Witness command-line interface.
+//!
+//! This is the entry point for `vbw verify` and `vbw show`. It orchestrates
+//! the full verification pipeline:
+//!
+//! 1. Parse CLI arguments (via `clap` derive API).
+//! 2. Load policy from `vbw-policy.json` (or use secure defaults).
+//! 3. Run SLSA verification (`slsa-verifier`, or schema-only mode).
+//! 4. Run in-toto verification (`in-toto-verify`, or structural-only mode).
+//! 5. Run independence checks (secret/network/digest/builder).
+//! 6. Compute deterministic bundle hash.
+//! 7. Write `report.json` with full verification results.
+//! 8. Generate in-toto attestation and sign with Sigstore (`cosign`).
+//!
+//! ## External Tool Invocation
+//!
+//! External tools are called via `std::process::Command`, which passes
+//! arguments as separate OS strings -- **no shell is invoked**. This
+//! eliminates shell injection as an attack vector. All stderr output
+//! from external tools is sanitized (secret-redacted and truncated)
+//! before being included in error messages or reports.
+//!
+//! ## Audit Notes for Reviewers
+//!
+//! - All file I/O on untrusted inputs goes through `fs_guard::read_validated`.
+//! - The `collect_key_paths` inner function canonicalizes paths and checks
+//!   for directory traversal attacks.
+//! - The `sanitize_tool_stderr` function applies best-effort secret redaction
+//!   to external tool error output using the same linear-time regex engine
+//!   used in independence checks.
+
 use anyhow::{anyhow, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use regex::Regex;
@@ -17,11 +48,20 @@ mod policy;
 
 use policy::VbwPolicy;
 
-// "Atm-grade" defensive limits for untrusted inputs.
-const MAX_JSON_BYTES: u64 = 20 * 1024 * 1024; // 20MB
-const MAX_TOOL_ERR_BYTES: usize = 8 * 1024; // 8KB
+/// Maximum size for JSON input files (provenance, layout). 20 MB is generous
+/// enough for any realistic SLSA provenance while preventing memory exhaustion
+/// from adversarially large inputs.
+const MAX_JSON_BYTES: u64 = 20 * 1024 * 1024;
 
-/// Runs an external tool, returning an error with sanitized stderr on failure.
+/// Maximum bytes of external tool stderr included in error messages. Truncation
+/// at 8 KB prevents a malicious tool from flooding reports with data.
+const MAX_TOOL_ERR_BYTES: usize = 8 * 1024;
+
+/// Runs an external tool as a subprocess, returning an error with sanitized
+/// stderr on failure.
+///
+/// Arguments are passed as separate OS strings via `std::process::Command` --
+/// no shell is invoked, so shell injection is structurally impossible.
 fn run_checked(cmd: &mut Command, name: &str) -> Result<()> {
     let out = cmd.output().with_context(|| format!("running {name}"))?;
     if !out.status.success() {
@@ -33,6 +73,19 @@ fn run_checked(cmd: &mut Command, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Sanitizes stderr output from external tools before including it in
+/// error messages or reports.
+///
+/// Applies three layers of defense:
+/// 1. **Truncation**: Limits output to 8 KB to prevent report flooding.
+/// 2. **Secret redaction**: Applies the same credential patterns used by
+///    the independence engine (AWS keys, GitHub PATs, private keys, etc.).
+/// 3. **Path redaction**: Replaces lines starting with `/` to avoid
+///    leaking filesystem structure.
+///
+/// This is best-effort: novel secret formats may not be caught. The
+/// primary defense is that VBW never handles credentials in the first
+/// place -- this redaction is a safety net for external tool output.
 fn sanitize_tool_stderr(stderr: &[u8]) -> String {
     let mut s = String::from_utf8_lossy(stderr).to_string();
     if s.len() > MAX_TOOL_ERR_BYTES {
@@ -40,7 +93,8 @@ fn sanitize_tool_stderr(stderr: &[u8]) -> String {
         s.push_str("\n[TRUNCATED]");
     }
 
-    // Best-effort secret redaction (the verifier should not leak env-paths/tokens into reports).
+    // Best-effort secret redaction using the same linear-time regex engine
+    // as independence checks. Patterns mirror those in independence.rs.
     let patterns = [
         (r"AKIA[0-9A-Z]{16}", "AKIA****************"),
         (r"(?i)ghp_[A-Za-z0-9]{30,60}", "ghp_****************"),
@@ -335,7 +389,12 @@ fn verify_bundle(
     let crypto_intoto = !no_external && intoto_layout_keys.is_some();
 
     if crypto_intoto {
-        let keys_path = intoto_layout_keys.as_ref().unwrap();
+        // `crypto_intoto` is true, so `intoto_layout_keys` must be `Some`.
+        let Some(keys_path) = intoto_layout_keys.as_ref() else {
+            return Err(anyhow!(
+                "internal: layout keys missing after is_some() check"
+            ));
+        };
         let key_paths = collect_key_paths(keys_path)?;
         if key_paths.is_empty() {
             intoto_ok = false;
@@ -406,9 +465,13 @@ fn verify_bundle(
 
     // --- Generate report
     let now = time::OffsetDateTime::now_utc().format(&Rfc3339)?;
+    // serde_json::Value indexing is panic-free: missing keys return Value::Null,
+    // and Value::Null comparisons return false. This is safe by design.
+    #[allow(clippy::indexing_slicing)]
     let overall_pass = slsa_ok && intoto_ok && indep["overall"] == "pass";
     let result = if overall_pass { "PASS" } else { "FAIL" };
 
+    #[allow(clippy::indexing_slicing)]
     let failures: Vec<String> = indep["blocking_failures"]
         .as_array()
         .into_iter()
@@ -416,6 +479,7 @@ fn verify_bundle(
         .filter_map(|v| v.as_str().map(ToString::to_string))
         .collect();
 
+    #[allow(clippy::indexing_slicing)]
     let warnings: Vec<String> = indep["warnings"]
         .as_array()
         .into_iter()

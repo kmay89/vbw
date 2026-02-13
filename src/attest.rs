@@ -1,7 +1,39 @@
+//! Attestation generation -- produces an in-toto Statement v1 with a VBW predicate.
+//!
+//! The attestation binds the verification results to the evidence bundle hash,
+//! creating an immutable record of what VBW checked and what it found. The
+//! statement follows the [in-toto Statement v1](https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md)
+//! specification:
+//!
+//! - `_type`: `https://in-toto.io/Statement/v1`
+//! - `subject[0]`: The evidence bundle, identified by its SHA-256 digest.
+//! - `predicateType`: `https://scqcs.dev/vbw/predicate/v1`
+//! - `predicate`: VBW-specific payload containing verification results,
+//!   evidence inventory, timestamp, and VBW version.
+//!
+//! ## Signing
+//!
+//! VBW does **not** sign the attestation itself. Signing is delegated to
+//! `cosign` (Sigstore) as an external subprocess, which provides keyless
+//! signing with transparency log anchoring. This separation of concerns
+//! means VBW's audit surface does not include key management or signing
+//! algorithm implementation.
+
 use anyhow::Result;
 use serde_json::{json, Value};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
+/// Creates an in-toto Statement v1 containing the VBW verification results.
+///
+/// The statement's `subject` field binds the attestation to the evidence
+/// bundle via its SHA-256 hash. The `predicate` field contains the full
+/// verification results (SLSA, in-toto, independence), the evidence
+/// inventory, and metadata (VBW version, RFC 3339 timestamp).
+///
+/// # Errors
+///
+/// Returns an error only if RFC 3339 timestamp formatting fails (should
+/// not happen in practice, but is propagated for defense in depth).
 pub fn make_vbw_statement(
     bundle_sha256: &str,
     evidence: &Value,
@@ -30,6 +62,7 @@ pub fn make_vbw_statement(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use serde_json::json;

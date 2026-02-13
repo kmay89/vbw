@@ -1,3 +1,37 @@
+//! Deterministic SHA-256 hashing of evidence bundles.
+//!
+//! This module walks a bundle directory, computes a per-file SHA-256 hash for
+//! every regular file, and then computes a bundle-level hash from the sorted
+//! concatenation of per-file hashes. The result is a single hex-encoded
+//! SHA-256 digest that uniquely identifies the bundle's contents.
+//!
+//! ## Determinism Guarantee
+//!
+//! The bundle hash is deterministic across platforms and runs because:
+//! - Files are sorted by path (lexicographic order) before hashing.
+//! - Hashes are computed from hex-encoded SHA-256 strings (not raw bytes),
+//!   eliminating endianness concerns.
+//! - The `vbw/` output directory is excluded from the hash to prevent
+//!   circular dependency (VBW writes its report into `vbw/`).
+//!
+//! ## Security Controls
+//!
+//! - **Symlink rejection**: `WalkDir` runs with `follow_links(false)` and
+//!   any symlink entry causes an immediate error. Individual file hashing
+//!   also checks `symlink_metadata()` before opening.
+//! - **Size limits**: Per-file (100 MB), total file count (10,000), and
+//!   total bundle size (2 GB) are enforced to prevent denial-of-service.
+//! - **Error propagation**: `WalkDir` errors are never silently swallowed.
+//!   An unreadable entry produces an error, not an incomplete hash.
+//! - **Streaming hashing**: Large files are hashed in 64 KB chunks to
+//!   bound memory usage regardless of file size.
+//!
+//! ## Cryptographic Note
+//!
+//! SHA-256 is provided by the `sha2` crate (`RustCrypto` project), which is
+//! a pure-Rust implementation with no FFI. It is **not** FIPS 140-2/140-3
+//! certified. See `AUDIT-BOUNDARY.md` §Known-Limitations for FIPS guidance.
+
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -6,12 +40,19 @@ use walkdir::WalkDir;
 
 /// Conservative limits for untrusted bundles.
 ///
-/// These are intentionally strict for "atm-grade" safety. If you need to verify
-/// truly massive bundles, bump these in a controlled release and document it.
-const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100MB
-const MAX_BUNDLE_FILES: usize = 10_000;
-const MAX_TOTAL_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2GB
+/// These are intentionally strict for deployment in regulated environments
+/// (ATM/POS firmware verification). If you need to verify truly massive
+/// bundles, bump these in a controlled release and document the change.
+const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100 MB per file
+const MAX_BUNDLE_FILES: usize = 10_000; // 10,000 files max
+const MAX_TOTAL_SIZE: u64 = 2 * 1024 * 1024 * 1024; // 2 GB total
 
+/// Computes the SHA-256 hash of a single file using streaming I/O.
+///
+/// Reads the file in 64 KB chunks to bound memory usage. Rejects symlinks
+/// and files exceeding `max_size` bytes before reading any content.
+///
+/// Returns `(hex_hash, file_size_bytes)`.
 fn sha256_file_streaming(p: &Path, max_size: u64) -> Result<(String, u64)> {
     let meta = fs::symlink_metadata(p).with_context(|| format!("stat {}", p.display()))?;
     if meta.file_type().is_symlink() {
@@ -38,11 +79,27 @@ fn sha256_file_streaming(p: &Path, max_size: u64) -> Result<(String, u64)> {
         if n == 0 {
             break;
         }
+        // Safe: Read::read() guarantees n <= buf.len().
+        #[allow(clippy::indexing_slicing)]
         h.update(&buf[..n]);
     }
     Ok((hex::encode(h.finalize()), len))
 }
 
+/// Computes a deterministic SHA-256 hash of an evidence bundle directory.
+///
+/// Walks `bundle_dir` recursively, hashing every regular file (excluding
+/// the `vbw/` output subdirectory). Returns a tuple of:
+/// - The hex-encoded bundle-level SHA-256 hash.
+/// - A JSON evidence object containing file inventory with per-file hashes.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - Any entry in the directory tree is a symlink.
+/// - Any file exceeds 100 MB, the bundle exceeds 10,000 files, or the
+///   total size exceeds 2 GB.
+/// - Any file or directory is unreadable (errors are never silently skipped).
 pub fn hash_bundle(bundle_dir: &Path) -> Result<(String, Value)> {
     let mut files = Vec::new();
     let mut total_size: u64 = 0;
@@ -127,6 +184,7 @@ pub fn hash_bundle(bundle_dir: &Path) -> Result<(String, Value)> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use std::fs;

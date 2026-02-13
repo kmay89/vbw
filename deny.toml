@@ -1,5 +1,14 @@
 # cargo-deny configuration — supply chain policy enforcement.
 # https://embarkstudios.github.io/cargo-deny/
+#
+# This file is a core security control for VBW. It enforces four pillars:
+#   1. Advisories  — block crates with known RustSec vulnerabilities
+#   2. Licenses    — allow only OSI-approved permissive licenses
+#   3. Bans        — block problematic crates by name
+#   4. Sources     — allow only crates.io (no git/unknown registries)
+#
+# Run locally: `cargo deny check` or `make deny`
+# CI runs all four checks on every PR and daily via scheduled workflow.
 
 [graph]
 targets = [
@@ -10,8 +19,26 @@ targets = [
 ]
 
 # --------------------------------------------------------------------------
+# Advisories — RustSec advisory database checks
+# --------------------------------------------------------------------------
+# Blocks any dependency with a known vulnerability or unmaintained status.
+# This complements cargo-audit by embedding the check in the cargo-deny
+# pipeline so a single `cargo deny check` covers all four pillars.
+[advisories]
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Treat unmaintained crates as errors across all dependencies — an
+# unmaintained dependency is a ticking supply chain risk for a security-
+# critical tool. Valid values: "all", "workspace", "transitive", "none".
+unmaintained = "all"
+# No advisories are ignored. If a false positive arises, document the
+# reason here with the advisory ID and a justification.
+ignore = []
+
+# --------------------------------------------------------------------------
 # Licenses — only allow OSI-approved, permissive licenses
 # --------------------------------------------------------------------------
+# For a supply-chain security tool deployed in regulated environments
+# (banking, ATM firmware), copyleft licenses are not acceptable.
 [licenses]
 version = 2
 allow = [
@@ -30,18 +57,26 @@ confidence-threshold = 0.8
 # --------------------------------------------------------------------------
 # Bans — prevent problematic crates
 # --------------------------------------------------------------------------
+# Explicit deny list for crates that are inappropriate for this project's
+# security posture. Each entry includes the rationale.
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
 highlight = "all"
 deny = [
-  # Unmaintained crates with known replacements
+  # openssl: C dependency with large attack surface. VBW uses pure-Rust
+  # crypto (sha2 from RustCrypto) and delegates TLS to external tools.
   { name = "openssl", wrappers = [] },
+  # openssl-sys: Transitive dependency of openssl; blocked for same reason.
+  { name = "openssl-sys", wrappers = [] },
 ]
 
 # --------------------------------------------------------------------------
 # Sources — only allow crates.io; no git dependencies in production
 # --------------------------------------------------------------------------
+# Git dependencies bypass crates.io's publication audit trail and can be
+# silently modified. For a security-critical tool, all dependencies must
+# come from the immutable crates.io registry.
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

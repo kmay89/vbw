@@ -1,0 +1,15 @@
+# cargo-audit configuration — RustSec advisory database scanning.
+# https://rustsec.org/
+#
+# This file configures `cargo audit` for VBW's security requirements.
+# Run locally: `cargo audit` or `make audit`
+# CI runs this on every PR and daily via scheduled workflow.
+#
+# Note: `unmaintained` and `yanked` policies are enforced by cargo-deny
+# (see deny.toml), not by cargo-audit. This file only controls the
+# cargo-audit-specific settings.
+
+[advisories]
+# No advisories are currently ignored. If a false positive arises, add
+# the advisory ID here with an explicit justification.
+ignore = []

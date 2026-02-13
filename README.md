@@ -109,6 +109,21 @@ make build       # Debug build
 make release     # Release build
 ```
 
+## Security Posture
+
+VBW is designed for deployment in regulated environments and follows
+[RustSec](https://rustsec.org/) best practices:
+
+- **Zero `unsafe` code**: `#![forbid(unsafe_code)]` -- cannot be overridden
+- **Zero known advisories**: `cargo-audit` + `cargo-deny` on every PR + daily
+- **No `.unwrap()` in production**: `clippy::unwrap_used = "deny"`
+- **No FFI/C dependencies**: OpenSSL is explicitly banned in `deny.toml`
+- **Linear-time regex**: No catastrophic backtracking (ReDoS) possible
+- **Symlink-safe I/O**: All untrusted file reads reject symlinks
+- **Size-bounded inputs**: Enforced limits on all untrusted data
+- **No shell invocation**: External tools called via `std::process::Command`
+- **Secret redaction**: Tool stderr is sanitized before inclusion in reports
+
 ## Repository Standards
 
 This repository follows banking-grade operational standards:

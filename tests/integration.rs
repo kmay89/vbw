@@ -5,6 +5,10 @@
 //! layer of testing that an auditor needs to see: proof that the tool works as
 //! a whole, not just in isolated units.
 
+// Test code uses .unwrap() and indexing freely -- this is standard Rust test
+// practice and is distinct from the production code lint policy.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;

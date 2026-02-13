@@ -1,16 +1,62 @@
+//! Policy configuration for VBW independence enforcement.
+//!
+//! The [`VbwPolicy`] struct defines the five configurable knobs that control
+//! how strictly VBW enforces independence. Users provide a `vbw-policy.json`
+//! file in their bundle directory; if absent, secure defaults are applied.
+//!
+//! ## Design Rationale
+//!
+//! - **Secure by default**: All security checks are enabled in the default
+//!   policy. Users must explicitly opt out of protections.
+//! - **Forward compatibility**: Unknown JSON fields are silently ignored by
+//!   serde. This allows newer policy schemas to be consumed by older VBW
+//!   versions without breaking. Auditors should note this is intentional.
+//! - **Size-bounded loading**: Policy files are read via
+//!   [`crate::fs_guard::read_validated`] with a 1 MB limit to prevent memory
+//!   exhaustion from maliciously large policy files.
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Maximum policy file size (1 MB).
+/// Maximum policy file size (1 MB). This limit prevents denial-of-service
+/// from oversized policy files while being generous enough for any realistic
+/// policy configuration.
 const MAX_POLICY_BYTES: u64 = 1024 * 1024;
 
+/// VBW policy configuration controlling independence enforcement behavior.
+///
+/// Each field maps directly to a check in [`crate::independence::check_independence`].
+/// The default values ([`VbwPolicy::default()`]) enable all security checks,
+/// following the principle of secure-by-default.
+///
+/// ## JSON Schema
+///
+/// ```json
+/// {
+///   "allowed_builder_prefixes": ["https://github.com/", "https://gitlab.com/"],
+///   "builder_allowlist_is_warning": true,
+///   "forbid_private_network_refs": true,
+///   "forbid_secrets": true,
+///   "require_digests": true
+/// }
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VbwPolicy {
+    /// URI prefixes for allowed builders (e.g., `"https://github.com/"`).
+    /// A builder whose ID starts with any of these prefixes passes the check.
     pub allowed_builder_prefixes: Vec<String>,
+    /// If `true`, an unknown builder produces a warning instead of a failure.
     pub builder_allowlist_is_warning: bool,
+    /// If `true`, provenance containing private/internal network addresses
+    /// (RFC 1918, localhost, `.local`) is a blocking failure.
     pub forbid_private_network_refs: bool,
+    /// If `true`, provenance containing embedded secrets (AWS keys, GitHub
+    /// PATs, private keys, passwords, bearer tokens) is a blocking failure.
     pub forbid_secrets: bool,
+    /// If `true`, provenance must contain at least one JSON object key named
+    /// `"sha256"` or `"digest"`. Provenance without digests suggests
+    /// non-reproducible evidence.
     pub require_digests: bool,
 }
 
@@ -31,6 +77,16 @@ impl Default for VbwPolicy {
 }
 
 impl VbwPolicy {
+    /// Loads a VBW policy from a JSON file, or returns secure defaults.
+    ///
+    /// When `path` is `Some`, the file is read via [`crate::fs_guard::read_validated`]
+    /// (symlink-checked, size-bounded to 1 MB) and parsed as JSON.
+    /// When `path` is `None`, [`VbwPolicy::default()`] is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file does not exist, is a symlink, exceeds
+    /// 1 MB, or contains invalid JSON.
     pub fn load(path: Option<&Path>) -> Result<Self> {
         match path {
             Some(p) => {
@@ -43,6 +99,7 @@ impl VbwPolicy {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use std::io::Write;
