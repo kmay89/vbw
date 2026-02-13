@@ -10,10 +10,6 @@
 # cargo-audit-specific settings.
 
 [advisories]
-# Show informational advisories for soundness issues and notices.
-# These are not blocking but are surfaced for auditor awareness.
-informational_warnings = ["unsound", "notice"]
-
 # No advisories are currently ignored. If a false positive arises, add
 # the advisory ID here with an explicit justification.
 ignore = []
