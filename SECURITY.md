@@ -100,14 +100,14 @@ VBW is designed to produce a clean `cargo-audit` report:
   [RustSec Advisory Database](https://rustsec.org/) on every PR and via
   daily scheduled workflow.
 - **Unmaintained crate policy**: `cargo-deny` is configured to **deny**
-  unmaintained dependencies (`unmaintained = "deny"` in `deny.toml`).
+  unmaintained dependencies (`unmaintained = "all"` in `deny.toml`).
 - **UB-risk-0** (per Google's `cargo vet` scale): VBW contains zero
   `unsafe` blocks. The `#![forbid(unsafe_code)]` attribute prevents any
   `unsafe` code from being added, even with `#[allow]` overrides.
 - **No C/C++ FFI**: OpenSSL and `openssl-sys` are explicitly banned in
   `deny.toml`. All dependencies are pure Rust.
-- **Yanked version detection**: `cargo-audit` is configured to deny
-  yanked crate versions (`.cargo/audit.toml`).
+- **Yanked version detection**: `cargo-audit` detects yanked crate
+  versions by default; `cargo-deny` enforces via `yanked` policy.
 
 ## Supply Chain Security
 

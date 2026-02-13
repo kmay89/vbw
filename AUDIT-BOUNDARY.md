@@ -303,7 +303,7 @@ with [Google's `cargo vet` auditing standards](https://github.com/google/rust-cr
 | Check | Tool | Config File | Frequency |
 |-------|------|------------|-----------|
 | Known CVEs | `cargo-audit` | `.cargo/audit.toml` | Every PR + daily |
-| Advisories + unmaintained | `cargo-deny advisories` | `deny.toml` | Every PR + daily |
+| Advisories + unmaintained | `cargo-deny advisories` | `deny.toml` | Daily (scheduled) |
 | License compliance | `cargo-deny licenses` | `deny.toml` | Every PR + daily |
 | Crate bans (openssl) | `cargo-deny bans` | `deny.toml` | Every PR + daily |
 | Registry restrictions | `cargo-deny sources` | `deny.toml` | Every PR + daily |

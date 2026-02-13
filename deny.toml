@@ -26,9 +26,10 @@ targets = [
 # pipeline so a single `cargo deny check` covers all four pillars.
 [advisories]
 db-urls = ["https://github.com/rustsec/advisory-db"]
-# Treat unmaintained crates as errors — an unmaintained dependency is a
-# ticking supply chain risk for a security-critical tool.
-unmaintained = "deny"
+# Treat unmaintained crates as errors across all dependencies — an
+# unmaintained dependency is a ticking supply chain risk for a security-
+# critical tool. Valid values: "all", "workspace", "transitive", "none".
+unmaintained = "all"
 # No advisories are ignored. If a false positive arises, document the
 # reason here with the advisory ID and a justification.
 ignore = []
