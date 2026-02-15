@@ -1,16 +1,29 @@
 //! VBW CLI binary -- Verified Build Witness command-line interface.
 //!
-//! This is the entry point for `vbw verify` and `vbw show`. It orchestrates
-//! the full verification pipeline:
+//! This is the entry point for `vbw verify`, `vbw show`, and `vbw build`.
+//! It orchestrates the full verification and build-witnessing pipelines:
+//!
+//! ## Verify Pipeline
 //!
 //! 1. Parse CLI arguments (via `clap` derive API).
-//! 2. Load policy from `vbw-policy.json` (or use secure defaults).
-//! 3. Run SLSA verification (`slsa-verifier`, or schema-only mode).
-//! 4. Run in-toto verification (`in-toto-verify`, or structural-only mode).
-//! 5. Run independence checks (secret/network/digest/builder).
-//! 6. Compute deterministic bundle hash.
-//! 7. Write `report.json` with full verification results.
-//! 8. Generate in-toto attestation and sign with Sigstore (`cosign`).
+//! 2. Detect external tool availability (slsa-verifier, in-toto-verify, cosign).
+//! 3. Load policy from `vbw-policy.json` (or use secure defaults).
+//! 4. Run SLSA verification (`slsa-verifier`, or schema-only mode).
+//! 5. Run in-toto verification (`in-toto-verify`, or structural-only mode).
+//! 6. Run independence checks (secret/network/digest/builder).
+//! 7. Compute deterministic bundle hash.
+//! 8. Write `report.json` with full verification results.
+//! 9. Generate in-toto attestation and sign with Sigstore (`cosign`).
+//!
+//! ## Build Pipeline
+//!
+//! 1. Hash source tree (git ls-files or directory walk).
+//! 2. Capture environment (OS, compiler versions, container digest).
+//! 3. Record dependency lockfile hashes.
+//! 4. Execute the user's build command and capture exit code.
+//! 5. Hash all output artifacts.
+//! 6. Write `manifest.json` with all component hashes.
+//! 7. Produce the complete `vbw/` witness bundle directory.
 //!
 //! ## External Tool Invocation
 //!
@@ -19,6 +32,10 @@
 //! eliminates shell injection as an attack vector. All stderr output
 //! from external tools is sanitized (secret-redacted and truncated)
 //! before being included in error messages or reports.
+//!
+//! When external tools are not installed, VBW reports exactly which tools
+//! are missing with installation instructions and clearly indicates which
+//! verification steps were skipped due to missing tools.
 //!
 //! ## Audit Notes for Reviewers
 //!
@@ -41,12 +58,15 @@ use std::{
 use time::format_description::well_known::Rfc3339;
 
 mod attest;
+mod build;
 mod bundlehash;
 mod fs_guard;
 mod independence;
 mod policy;
+mod toolcheck;
 
 use policy::VbwPolicy;
+use toolcheck::ToolAvailability;
 
 /// Maximum size for JSON input files (provenance, layout). 20 MB is generous
 /// enough for any realistic SLSA provenance while preventing memory exhaustion
@@ -148,6 +168,7 @@ enum SlsaMode {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Verify an evidence bundle against SLSA, in-toto, and independence policy
     Verify {
         /// Bundle directory
         bundle_dir: PathBuf,
@@ -201,6 +222,31 @@ enum Cmd {
         #[arg(long)]
         sigstore_bundle: PathBuf,
     },
+
+    /// Witness a build: capture source hash, environment, run the build, hash
+    /// outputs, and produce a complete VBW evidence bundle
+    Build {
+        /// Output directory for the witness bundle (defaults to `./vbw-out`)
+        #[arg(long, default_value = "vbw-out")]
+        output_dir: PathBuf,
+
+        /// Artifact file(s) or directory to hash after the build completes.
+        /// Can be specified multiple times.
+        #[arg(long)]
+        artifact: Vec<PathBuf>,
+
+        /// Source directory to hash (defaults to current directory)
+        #[arg(long)]
+        source_dir: Option<PathBuf>,
+
+        /// SLSA builder identity URI to record in provenance
+        #[arg(long, default_value = "https://github.com/actions/runner")]
+        builder_id: String,
+
+        /// The build command and its arguments (everything after --)
+        #[arg(last = true, required = true)]
+        build_cmd: Vec<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -235,6 +281,19 @@ fn main() -> Result<()> {
             attestation,
             sigstore_bundle,
         } => show_attestation(&attestation, &sigstore_bundle),
+        Cmd::Build {
+            output_dir,
+            artifact,
+            source_dir,
+            builder_id,
+            build_cmd,
+        } => build::run_build(
+            &output_dir,
+            &artifact,
+            source_dir.as_deref(),
+            &builder_id,
+            &build_cmd,
+        ),
     }
 }
 
@@ -251,10 +310,33 @@ fn verify_bundle(
     slsa_mode: SlsaMode,
     policy_path: Option<PathBuf>,
 ) -> Result<()> {
-    // Enforce SLSA honesty
+    // --- Detect external tool availability ---
+    let tools = if no_external {
+        // User explicitly opted out; skip detection entirely.
+        ToolAvailability {
+            slsa_verifier: false,
+            in_toto_verify: false,
+            cosign: false,
+        }
+    } else {
+        let t = toolcheck::detect_tools();
+        let missing = t.missing_tools_report();
+        if !missing.is_empty() {
+            eprintln!("Warning: some external tools are not installed:");
+            for m in &missing {
+                eprintln!("  - {m}");
+            }
+            eprintln!("VBW will skip verification steps that require missing tools.");
+            eprintln!();
+        }
+        t
+    };
+
+    // Enforce SLSA honesty: full mode requires either artifacts or --no-external
+    // or the tool being unavailable (with clear reporting).
     match slsa_mode {
         SlsaMode::Full => {
-            if artifacts.is_empty() && !no_external {
+            if artifacts.is_empty() && !no_external && tools.slsa_verifier {
                 return Err(anyhow!(
                     "SLSA full verification requires --artifact. Use --slsa-mode schema-only if you only want JSON validation."
                 ));
@@ -281,13 +363,40 @@ fn verify_bundle(
     });
     let policy = VbwPolicy::load(policy_file.as_deref())?;
 
-    // --- SLSA verification
+    // --- SLSA verification ---
     let mut slsa_ok = true;
-    let mut slsa_detail = serde_json::json!({"skipped": no_external});
+    let mut slsa_detail;
 
-    if !no_external {
+    if no_external || !tools.slsa_verifier {
+        match slsa_mode {
+            SlsaMode::Full if !no_external && !tools.slsa_verifier => {
+                // Tool missing -- degrade gracefully with clear reporting.
+                let _v: Value =
+                    serde_json::from_slice(&fs_guard::read_validated(&prov_path, MAX_JSON_BYTES)?)?;
+                slsa_detail = serde_json::json!({
+                    "mode": "schema-only",
+                    "tool_available": false,
+                    "note": "slsa-verifier not found on $PATH; fell back to JSON parse only",
+                    "limitation": "No artifact verification was performed"
+                });
+            }
+            SlsaMode::SchemaOnly | SlsaMode::Full => {
+                let _v: Value =
+                    serde_json::from_slice(&fs_guard::read_validated(&prov_path, MAX_JSON_BYTES)?)?;
+                slsa_detail = if no_external {
+                    serde_json::json!({"skipped": true, "reason": "--no-external"})
+                } else {
+                    serde_json::json!({
+                        "mode": "schema-only",
+                        "note": "Only JSON parse performed (no artifact verification)"
+                    })
+                };
+            }
+        }
+    } else {
         match slsa_mode {
             SlsaMode::Full => {
+                slsa_detail = serde_json::json!({"mode": "full", "tool_available": true});
                 for a in &artifacts {
                     let ap = if a.is_absolute() {
                         a.clone()
@@ -306,6 +415,8 @@ fn verify_bundle(
                     if !out.status.success() {
                         slsa_ok = false;
                         slsa_detail = serde_json::json!({
+                            "mode": "full",
+                            "tool_available": true,
                             "error": sanitize_tool_stderr(&out.stderr)
                         });
                         break;
@@ -323,7 +434,7 @@ fn verify_bundle(
         }
     }
 
-    // --- in-toto verification
+    // --- in-toto verification ---
     let mut intoto_ok = true;
     let intoto_detail;
 
@@ -386,10 +497,10 @@ fn verify_bundle(
         }
     }
 
-    let crypto_intoto = !no_external && intoto_layout_keys.is_some();
+    let want_crypto_intoto = !no_external && intoto_layout_keys.is_some();
 
-    if crypto_intoto {
-        // `crypto_intoto` is true, so `intoto_layout_keys` must be `Some`.
+    if want_crypto_intoto && tools.in_toto_verify {
+        // Full cryptographic in-toto verification.
         let Some(keys_path) = intoto_layout_keys.as_ref() else {
             return Err(anyhow!(
                 "internal: layout keys missing after is_some() check"
@@ -429,6 +540,17 @@ fn verify_bundle(
                 });
             }
         }
+    } else if want_crypto_intoto && !tools.in_toto_verify {
+        // User wanted crypto verification but tool is missing.
+        let _v: Value =
+            serde_json::from_slice(&fs_guard::read_validated(&layout_path, MAX_JSON_BYTES)?)?;
+        intoto_detail = serde_json::json!({
+            "mode": "structural-only",
+            "tool_available": false,
+            "note": "in-toto-verify not found on $PATH; fell back to structural check only",
+            "limitation": "Layout signature was NOT verified",
+            "warning": "Install in-toto to enable cryptographic layout verification"
+        });
     } else if !links.exists() {
         // Structural-only: links dir missing is a blocking failure.
         intoto_ok = false;
@@ -450,12 +572,12 @@ fn verify_bundle(
         };
     }
 
-    // --- VBW independence checks
+    // --- VBW independence checks ---
     let prov_json: Value =
         serde_json::from_slice(&fs_guard::read_validated(&prov_path, MAX_JSON_BYTES)?)?;
     let indep = independence::check_independence(&prov_json, &policy)?;
 
-    // --- Bundle hash
+    // --- Bundle hash ---
     let (bundle_sha256, evidence) = bundlehash::hash_bundle(bundle_dir)?;
     let vbw_out_dir = bundle_dir.join("vbw");
     fs::create_dir_all(&vbw_out_dir)?;
@@ -463,7 +585,7 @@ fn verify_bundle(
     let att_path = vbw_out_dir.join("vbw-attestation.json");
     let report_path = vbw_out_dir.join("report.json");
 
-    // --- Generate report
+    // --- Generate report ---
     let now = time::OffsetDateTime::now_utc().format(&Rfc3339)?;
     // serde_json::Value indexing is panic-free: missing keys return Value::Null,
     // and Value::Null comparisons return false. This is safe by design.
@@ -487,6 +609,12 @@ fn verify_bundle(
         .filter_map(|v| v.as_str().map(ToString::to_string))
         .collect();
 
+    let tool_status = serde_json::json!({
+        "slsa_verifier": tools.slsa_verifier,
+        "in_toto_verify": tools.in_toto_verify,
+        "cosign": tools.cosign
+    });
+
     let report = serde_json::json!({
         "report_schema": "https://scqcs.dev/vbw/report/v1",
         "vbw_version": env!("CARGO_PKG_VERSION"),
@@ -496,6 +624,7 @@ fn verify_bundle(
         "result": result,
         "failures": failures,
         "warnings": warnings,
+        "external_tools": tool_status,
         "slsa": { "ok": slsa_ok, "detail": slsa_detail },
         "intoto": { "ok": intoto_ok, "detail": intoto_detail },
         "independence": indep,
@@ -504,7 +633,7 @@ fn verify_bundle(
 
     fs::write(&report_path, serde_json::to_vec_pretty(&report)?)?;
 
-    // --- Dry run exit
+    // --- Dry run exit ---
     if dry_run {
         println!(
             "(dry-run) Verification complete. See: {}",
@@ -516,13 +645,13 @@ fn verify_bundle(
         return Ok(());
     }
 
-    // --- Generate attestation
+    // --- Generate attestation ---
     let att = attest::make_vbw_statement(&bundle_sha256, &evidence, slsa_ok, intoto_ok, &indep)?;
     fs::write(&att_path, serde_json::to_vec_pretty(&att)?)?;
 
-    // --- Sign with Sigstore
+    // --- Sign with Sigstore ---
     let bundle_path = vbw_out_dir.join("vbw-attestation.sigstore.bundle");
-    if !no_external {
+    if !no_external && tools.cosign {
         run_checked(
             Command::new("cosign")
                 .args(["sign-blob", "--yes", "--bundle"])
@@ -537,11 +666,16 @@ fn verify_bundle(
                 .arg(&att_path),
             "cosign verify-blob",
         )?;
+    } else if !no_external && !tools.cosign {
+        eprintln!("Warning: cosign not found; attestation was NOT signed");
+        eprintln!("  Install cosign to enable Sigstore signing and verification.");
     }
 
-    // --- Summary output
+    // --- Summary output ---
     if !slsa_ok {
         eprintln!("✗ SLSA check failed");
+    } else if !tools.slsa_verifier && !no_external {
+        println!("⚠ SLSA: schema-only (slsa-verifier not installed)");
     } else {
         println!("✓ SLSA ok");
     }
@@ -566,7 +700,7 @@ fn verify_bundle(
 
     println!("✓ Independence policy: pass");
     println!("→ VBW attestation: {}", att_path.display());
-    if !no_external {
+    if !no_external && tools.cosign {
         println!("→ Sigstore bundle: {}", bundle_path.display());
     }
     println!("→ Report: {}", report_path.display());
@@ -578,15 +712,26 @@ fn show_attestation(attestation: &Path, sigstore_bundle: &Path) -> Result<()> {
     let att: Value =
         serde_json::from_slice(&fs_guard::read_validated(attestation, MAX_JSON_BYTES)?)?;
 
-    let outv = Command::new("cosign")
-        .arg("verify-blob")
-        .arg("--bundle")
-        .arg(sigstore_bundle)
-        .arg(attestation)
-        .output()
-        .context("running cosign verify-blob")?;
+    // Check if cosign is available before attempting verification.
+    let tools = toolcheck::detect_tools();
+    let sig_ok = if tools.cosign {
+        let outv = Command::new("cosign")
+            .arg("verify-blob")
+            .arg("--bundle")
+            .arg(sigstore_bundle)
+            .arg(attestation)
+            .output()
+            .context("running cosign verify-blob")?;
 
-    let sig_ok = outv.status.success();
+        if !outv.status.success() {
+            eprintln!("\n{}", sanitize_tool_stderr(&outv.stderr));
+        }
+        outv.status.success()
+    } else {
+        eprintln!("Warning: cosign not found on $PATH; signature cannot be verified.");
+        eprintln!("  Install: https://docs.sigstore.dev/cosign/system_config/installation/");
+        false
+    };
 
     let bundle_digest = att
         .pointer("/subject/0/digest/sha256")
@@ -610,8 +755,8 @@ fn show_attestation(attestation: &Path, sigstore_bundle: &Path) -> Result<()> {
         .unwrap_or("unknown");
 
     println!("VBW Attestation v{}", env!("CARGO_PKG_VERSION"));
-    println!("Bundle: sha256:{}", bundle_digest);
-    println!("Verified: {}", verified_at);
+    println!("Bundle: sha256:{bundle_digest}");
+    println!("Verified: {verified_at}");
     println!("SLSA: {}", if slsa_ok { "✓ pass" } else { "✗ fail" });
     println!("in-toto: {}", if intoto_ok { "✓ pass" } else { "✗ fail" });
     println!(
@@ -622,17 +767,20 @@ fn show_attestation(attestation: &Path, sigstore_bundle: &Path) -> Result<()> {
             "✗ fail"
         }
     );
-    println!(
-        "Sigstore: {}",
-        if sig_ok {
-            "✓ verified"
-        } else {
-            "✗ NOT verified"
-        }
-    );
+    if tools.cosign {
+        println!(
+            "Sigstore: {}",
+            if sig_ok {
+                "✓ verified"
+            } else {
+                "✗ NOT verified"
+            }
+        );
+    } else {
+        println!("Sigstore: ⚠ cosign not installed (signature not checked)");
+    }
 
-    if !sig_ok {
-        eprintln!("\n{}", sanitize_tool_stderr(&outv.stderr));
+    if tools.cosign && !sig_ok {
         return Err(anyhow!("Sigstore verification failed"));
     }
 
