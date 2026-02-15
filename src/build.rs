@@ -159,12 +159,28 @@ pub fn run_build(
     let links_dir = output_dir.join("links");
     fs::create_dir_all(&links_dir)?;
 
+    // Canonicalize the source directory path for the manifest. This gives
+    // downstream tools an unambiguous, absolute path rather than a relative
+    // one like ".".
+    let canonical_src_dir = src_dir
+        .canonicalize()
+        .with_context(|| format!("canonicalizing source directory: {}", src_dir.display()))?;
+
+    // Format timestamps, propagating errors rather than silently producing
+    // empty strings (which would be invalid RFC 3339).
+    let started_ts = start_time
+        .format(&Rfc3339)
+        .context("formatting start timestamp")?;
+    let completed_ts = end_time
+        .format(&Rfc3339)
+        .context("formatting end timestamp")?;
+
     // Write manifest.json
     let manifest = serde_json::json!({
         "manifest_schema": "https://scqcs.dev/vbw/manifest/v1",
         "vbw_version": env!("CARGO_PKG_VERSION"),
         "source": {
-            "directory": src_dir.canonicalize().unwrap_or_else(|_| src_dir.to_path_buf()).display().to_string(),
+            "directory": canonical_src_dir.display().to_string(),
             "sha256": source_hash
         },
         "environment": {
@@ -184,8 +200,8 @@ pub fn run_build(
         },
         "artifacts": artifact_hashes,
         "timestamps": {
-            "started": start_time.format(&Rfc3339).unwrap_or_default(),
-            "completed": end_time.format(&Rfc3339).unwrap_or_default()
+            "started": started_ts,
+            "completed": completed_ts
         }
     });
     let manifest_path = output_dir.join("manifest.json");
@@ -209,7 +225,7 @@ pub fn run_build(
             },
             "materials": [
                 {
-                    "uri": format!("file://{}", src_dir.canonicalize().unwrap_or_else(|_| src_dir.to_path_buf()).display()),
+                    "uri": format!("file://{}", canonical_src_dir.display()),
                     "digest": { "sha256": source_hash }
                 }
             ]
@@ -453,37 +469,33 @@ struct BuildResult {
 /// Executes the build command and captures its result.
 ///
 /// The command is executed via `std::process::Command` -- no shell is invoked.
-/// Stdout and stderr are inherited (streamed to the terminal) so the user sees
-/// build output in real time. Sizes are captured from pipe output for recording.
+/// Stdout and stderr are inherited (streamed to the terminal in real time) so
+/// the user sees build output as it happens. This avoids buffering the entire
+/// build output in memory, which could be problematic for large builds.
+///
+/// Because output is inherited (not piped), we cannot measure exact byte
+/// counts. The `stdout_size` and `stderr_size` fields are set to 0 for
+/// inherited streams; the important signal is the exit code.
 fn execute_build(build_cmd: &[String]) -> Result<BuildResult> {
     let (program, args) = build_cmd
         .split_first()
         .ok_or_else(|| anyhow!("Empty build command"))?;
 
-    let output = Command::new(program)
+    let status = Command::new(program)
         .args(args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
         .with_context(|| format!("executing build command: {program}"))?;
 
-    // Print stdout/stderr so the user sees build output.
-    if !output.stdout.is_empty() {
-        let s = String::from_utf8_lossy(&output.stdout);
-        print!("{s}");
-    }
-    if !output.stderr.is_empty() {
-        let s = String::from_utf8_lossy(&output.stderr);
-        eprint!("{s}");
-    }
-
-    let exit_code = output.status.code().unwrap_or(-1);
-    #[allow(clippy::cast_possible_truncation)]
+    let exit_code = status.code().unwrap_or(-1);
     Ok(BuildResult {
-        success: output.status.success(),
+        success: status.success(),
         exit_code,
-        stdout_size: output.stdout.len() as u64,
-        stderr_size: output.stderr.len() as u64,
+        // Inherited streams cannot be measured; record 0 to indicate
+        // "streamed to terminal, not captured".
+        stdout_size: 0,
+        stderr_size: 0,
     })
 }
 

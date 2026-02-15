@@ -365,7 +365,7 @@ fn verify_bundle(
 
     // --- SLSA verification ---
     let mut slsa_ok = true;
-    let slsa_detail;
+    let mut slsa_detail;
 
     if no_external || !tools.slsa_verifier {
         match slsa_mode {
@@ -414,6 +414,11 @@ fn verify_bundle(
                     let out = cmd.output().context("running slsa-verifier")?;
                     if !out.status.success() {
                         slsa_ok = false;
+                        slsa_detail = serde_json::json!({
+                            "mode": "full",
+                            "tool_available": true,
+                            "error": sanitize_tool_stderr(&out.stderr)
+                        });
                         break;
                     }
                 }
