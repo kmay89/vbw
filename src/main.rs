@@ -243,6 +243,12 @@ enum Cmd {
         #[arg(long, default_value = "https://github.com/actions/runner")]
         builder_id: String,
 
+        /// Ed25519 signing key file (32 or 64 raw bytes).
+        /// If omitted, falls back to `VBW_ED25519_SK_B64` env var.
+        /// Without either, the manifest is unsigned.
+        #[arg(long)]
+        key: Option<PathBuf>,
+
         /// The build command and its arguments (everything after --)
         #[arg(last = true, required = true)]
         build_cmd: Vec<String>,
@@ -286,6 +292,7 @@ fn main() -> Result<()> {
             artifact,
             source_dir,
             builder_id,
+            key,
             build_cmd,
         } => build::run_build(
             &output_dir,
@@ -293,6 +300,7 @@ fn main() -> Result<()> {
             source_dir.as_deref(),
             &builder_id,
             &build_cmd,
+            key.as_deref(),
         ),
     }
 }
@@ -593,6 +601,16 @@ fn verify_bundle(
     let overall_pass = slsa_ok && intoto_ok && indep["overall"] == "pass";
     let result = if overall_pass { "PASS" } else { "FAIL" };
 
+    // Compute granular verdict: Verified (all external tools present and pass),
+    // Verified-with-caveats (pass but some tools missing), Unverified (any failure).
+    let verdict = if !overall_pass {
+        "Unverified"
+    } else if no_external || !tools.all_available() {
+        "Verified-with-caveats"
+    } else {
+        "Verified"
+    };
+
     #[allow(clippy::indexing_slicing)]
     let failures: Vec<String> = indep["blocking_failures"]
         .as_array()
@@ -622,6 +640,7 @@ fn verify_bundle(
         "bundle_sha256": bundle_sha256,
         "verification_timestamp": now,
         "result": result,
+        "verdict": verdict,
         "failures": failures,
         "warnings": warnings,
         "external_tools": tool_status,
@@ -699,6 +718,7 @@ fn verify_bundle(
     }
 
     println!("✓ Independence policy: pass");
+    println!("→ Verdict: {verdict}");
     println!("→ VBW attestation: {}", att_path.display());
     if !no_external && tools.cosign {
         println!("→ Sigstore bundle: {}", bundle_path.display());

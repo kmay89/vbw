@@ -122,3 +122,38 @@ jobs:
           name: vbw-${{ matrix.os }}
           path: target/release/vbw
           retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Dogfooding — VBW witnesses its own build
+  # ---------------------------------------------------------------------------
+  # Uses `vbw build` to witness the release build, then `vbw verify` on the
+  # resulting bundle. This proves the build-verify chain works end-to-end
+  # and that VBW can verify itself.
+  dogfood:
+    name: dogfood
+    needs: [fmt, clippy, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+      - name: Build VBW (bootstrap binary)
+        run: cargo build --release
+      - name: VBW witnesses its own build
+        run: |
+          ./target/release/vbw build \
+            --output-dir vbw-witness \
+            --artifact target/release/vbw \
+            -- cargo build --release
+      - name: Verify witness bundle
+        run: |
+          ./target/release/vbw verify vbw-witness \
+            --no-external --dry-run --slsa-mode schema-only
+      - name: Show report
+        run: cat vbw-witness/vbw/report.json
+      - name: Upload witness bundle
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: vbw-witness-bundle
+          path: vbw-witness/
+          retention-days: 30
