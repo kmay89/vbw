@@ -30,9 +30,11 @@ use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::Read,
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::Command,
+    sync::{Arc, Mutex},
+    thread,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -71,6 +73,7 @@ pub fn run_build(
     source_dir: Option<&Path>,
     builder_id: &str,
     build_cmd: &[String],
+    key_path: Option<&Path>,
 ) -> Result<()> {
     if build_cmd.is_empty() {
         return Err(anyhow!(
@@ -86,23 +89,37 @@ pub fn run_build(
         ));
     }
 
+    // Resolve signing key early so we fail fast on bad keys.
+    let signing_key = resolve_signing_key(key_path)?;
+
     let start_time = time::OffsetDateTime::now_utc();
     println!("VBW Build Witness v{}", env!("CARGO_PKG_VERSION"));
     println!();
 
-    // Step 1: Hash source tree
-    println!("[1/6] Hashing source tree...");
+    // Step 1: Hash source tree and record git metadata
+    println!("[1/7] Hashing source tree...");
     let source_hash = hash_source_tree(src_dir)?;
+    let source_commit = git_head_commit(src_dir);
+    let worktree_dirty = git_worktree_dirty(src_dir);
     println!("  Source SHA-256: {source_hash}");
+    if let Some(ref commit) = source_commit {
+        println!("  Git commit: {commit}");
+    }
+    if worktree_dirty {
+        println!("  Warning: working tree has uncommitted changes");
+    }
 
-    // Step 2: Capture environment
-    println!("[2/6] Capturing environment...");
+    // Step 2: Capture environment (including container detection)
+    println!("[2/7] Capturing environment...");
     let env_info = capture_environment();
     println!("  OS: {}", env_info.os);
     println!("  Arch: {}", env_info.arch);
+    if let Some(ref ct) = env_info.container {
+        println!("  Container: {ct}");
+    }
 
     // Step 3: Record dependency lockfiles
-    println!("[3/6] Recording dependency lockfiles...");
+    println!("[3/7] Recording dependency lockfiles...");
     let dep_hashes = hash_lockfiles(src_dir)?;
     if dep_hashes.is_empty() {
         println!("  No lockfiles found");
@@ -112,9 +129,15 @@ pub fn run_build(
         }
     }
 
-    // Step 4: Execute build command
-    println!("[4/6] Running build command: {}", build_cmd.join(" "));
-    let build_result = execute_build(build_cmd)?;
+    // Step 4: Execute build command with transcript capture
+    println!("[4/7] Running build command: {}", build_cmd.join(" "));
+
+    // Create output dir early so we can write transcript there.
+    fs::create_dir_all(output_dir)
+        .with_context(|| format!("creating output directory: {}", output_dir.display()))?;
+
+    let transcript_path = output_dir.join("transcript.txt");
+    let build_result = execute_build_with_transcript(build_cmd, &transcript_path)?;
     if !build_result.success {
         eprintln!(
             "  Build command failed with exit code: {}",
@@ -128,7 +151,7 @@ pub fn run_build(
     println!("  Build succeeded (exit code 0)");
 
     // Step 5: Hash output artifacts
-    println!("[5/6] Hashing output artifacts...");
+    println!("[5/7] Hashing output artifacts...");
     let mut artifact_hashes = Vec::new();
     for art in artifacts {
         if !art.exists() {
@@ -150,11 +173,8 @@ pub fn run_build(
     }
 
     // Step 6: Write manifest and bundle
-    println!("[6/6] Writing witness bundle...");
+    println!("[6/7] Writing witness bundle...");
     let end_time = time::OffsetDateTime::now_utc();
-
-    fs::create_dir_all(output_dir)
-        .with_context(|| format!("creating output directory: {}", output_dir.display()))?;
 
     let links_dir = output_dir.join("links");
     fs::create_dir_all(&links_dir)?;
@@ -175,20 +195,45 @@ pub fn run_build(
         .format(&Rfc3339)
         .context("formatting end timestamp")?;
 
-    // Write manifest.json
-    let manifest = serde_json::json!({
-        "manifest_schema": "https://scqcs.dev/vbw/manifest/v1",
-        "vbw_version": env!("CARGO_PKG_VERSION"),
-        "source": {
+    // Build source metadata object.
+    // serde_json::Value indexing on objects is panic-free (returns Null for missing keys,
+    // and assignment on objects inserts or replaces). Allow indexing here.
+    #[allow(clippy::indexing_slicing)]
+    let source_meta = {
+        let mut m = serde_json::json!({
             "directory": canonical_src_dir.display().to_string(),
             "sha256": source_hash
-        },
-        "environment": {
+        });
+        if let Some(ref commit) = source_commit {
+            m["commit"] = serde_json::Value::String(commit.clone());
+        }
+        if worktree_dirty {
+            m["worktree_dirty"] = serde_json::Value::Bool(true);
+        }
+        m
+    };
+
+    // Build environment object.
+    #[allow(clippy::indexing_slicing)]
+    let env_obj = {
+        let mut e = serde_json::json!({
             "os": env_info.os,
             "arch": env_info.arch,
             "compiler_versions": env_info.compilers,
             "env_vars": env_info.selected_env_vars
-        },
+        });
+        if let Some(ref ct) = env_info.container {
+            e["container"] = serde_json::Value::String(ct.clone());
+        }
+        e
+    };
+
+    // Write manifest.json
+    let manifest = serde_json::json!({
+        "manifest_schema": "https://scqcs.dev/vbw/manifest/v1",
+        "vbw_version": env!("CARGO_PKG_VERSION"),
+        "source": source_meta,
+        "environment": env_obj,
         "dependencies": dep_hashes.iter().map(|(name, hash)| {
             serde_json::json!({"lockfile": name, "sha256": hash})
         }).collect::<Vec<_>>(),
@@ -196,7 +241,8 @@ pub fn run_build(
             "command": build_cmd,
             "exit_code": build_result.exit_code,
             "stdout_bytes": build_result.stdout_size,
-            "stderr_bytes": build_result.stderr_size
+            "stderr_bytes": build_result.stderr_size,
+            "transcript": "transcript.txt"
         },
         "artifacts": artifact_hashes,
         "timestamps": {
@@ -205,7 +251,8 @@ pub fn run_build(
         }
     });
     let manifest_path = output_dir.join("manifest.json");
-    fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)?;
+    fs::write(&manifest_path, &manifest_bytes)?;
 
     // Write SLSA v1 provenance
     let provenance = serde_json::json!({
@@ -245,7 +292,7 @@ pub fn run_build(
         serde_json::to_vec_pretty(&layout)?,
     )?;
 
-    // Write placeholder link
+    // Write link file
     let link = serde_json::json!({
         "_type": "link",
         "name": "vbw-build",
@@ -262,6 +309,26 @@ pub fn run_build(
         serde_json::to_vec_pretty(&link)?,
     )?;
 
+    // Step 7: Sign manifest with Ed25519 (if key provided)
+    println!("[7/7] Signing...");
+    if let Some(ref sk) = signing_key {
+        let manifest_hash = hex::encode(Sha256::digest(&manifest_bytes));
+        let signature = sign_manifest(sk, &manifest_hash);
+
+        let sig_json = serde_json::json!({
+            "algorithm": "ed25519",
+            "public_key": hex::encode(sk.verifying_key().as_bytes()),
+            "manifest_sha256": manifest_hash,
+            "signature": signature
+        });
+        let sig_path = output_dir.join("signature.json");
+        fs::write(&sig_path, serde_json::to_vec_pretty(&sig_json)?)?;
+        println!("  Manifest signed with Ed25519");
+        println!("  signature.json:   {}", sig_path.display());
+    } else {
+        println!("  No signing key provided (use --key or VBW_ED25519_SK_B64)");
+    }
+
     println!();
     println!("Witness bundle written to: {}", output_dir.display());
     println!("  manifest.json:    {}", manifest_path.display());
@@ -270,10 +337,210 @@ pub fn run_build(
         "  layout.json:      {}",
         output_dir.join("layout.json").display()
     );
+    println!("  transcript.txt:   {}", transcript_path.display());
     println!();
     println!("Next: verify with `vbw verify {}`", output_dir.display());
 
     Ok(())
+}
+
+/// Returns the HEAD commit SHA from git, or None if not in a git repo.
+fn git_head_commit(src_dir: &Path) -> Option<String> {
+    Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(src_dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Returns true if the git working tree has uncommitted changes.
+fn git_worktree_dirty(src_dir: &Path) -> bool {
+    Command::new("git")
+        .args(["diff-index", "--quiet", "HEAD", "--"])
+        .current_dir(src_dir)
+        .status()
+        .map(|s| !s.success())
+        .unwrap_or(false)
+}
+
+/// Detects if the current process is running inside a container.
+///
+/// Checks for `.dockerenv`, container-related cgroup entries, and
+/// container-specific environment variables.
+fn detect_container() -> Option<String> {
+    // Check for Docker's sentinel file.
+    if Path::new("/.dockerenv").exists() {
+        return Some("docker".to_string());
+    }
+
+    // Check cgroup v1/v2 for container indicators.
+    if let Ok(cgroup) = fs::read_to_string("/proc/1/cgroup") {
+        if cgroup.contains("docker") {
+            return Some("docker".to_string());
+        }
+        if cgroup.contains("kubepods") {
+            return Some("kubernetes".to_string());
+        }
+        if cgroup.contains("lxc") {
+            return Some("lxc".to_string());
+        }
+    }
+
+    // Check well-known container environment variables.
+    if std::env::var("KUBERNETES_SERVICE_HOST").is_ok() {
+        return Some("kubernetes".to_string());
+    }
+    if std::env::var("container").is_ok() {
+        return Some("container".to_string());
+    }
+
+    None
+}
+
+/// Resolves the Ed25519 signing key from either a file path or the
+/// `VBW_ED25519_SK_B64` environment variable.
+///
+/// Returns `None` if no key source is available (unsigned build).
+fn resolve_signing_key(key_path: Option<&Path>) -> Result<Option<ed25519_dalek::SigningKey>> {
+    use base64::Engine;
+
+    if let Some(path) = key_path {
+        let bytes =
+            fs::read(path).with_context(|| format!("reading signing key: {}", path.display()))?;
+        return parse_signing_key_bytes(&bytes)
+            .with_context(|| format!("parsing signing key from {}", path.display()))
+            .map(Some);
+    }
+
+    if let Ok(b64) = std::env::var("VBW_ED25519_SK_B64") {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .context("decoding VBW_ED25519_SK_B64 as base64")?;
+        return parse_signing_key_bytes(&bytes)
+            .context("parsing signing key from VBW_ED25519_SK_B64")
+            .map(Some);
+    }
+
+    Ok(None)
+}
+
+/// Parses raw bytes into an Ed25519 signing key. Accepts 32-byte secret keys
+/// or 64-byte keypairs (secret key in first 32 bytes).
+fn parse_signing_key_bytes(bytes: &[u8]) -> Result<ed25519_dalek::SigningKey> {
+    let key_bytes: [u8; 32] = match bytes.len() {
+        32 => bytes
+            .try_into()
+            .map_err(|_| anyhow!("failed to convert 32 bytes to key array"))?,
+        64 => {
+            // Keypair format: first 32 bytes are the secret key.
+            #[allow(clippy::indexing_slicing)]
+            bytes[..32]
+                .try_into()
+                .map_err(|_| anyhow!("failed to extract 32-byte secret from keypair"))?
+        }
+        n => {
+            return Err(anyhow!(
+                "Invalid key size: expected 32 or 64 bytes, got {n}"
+            ));
+        }
+    };
+    Ok(ed25519_dalek::SigningKey::from_bytes(&key_bytes))
+}
+
+/// Signs the hex-encoded manifest hash with the Ed25519 key and returns the
+/// hex-encoded signature.
+fn sign_manifest(sk: &ed25519_dalek::SigningKey, manifest_sha256: &str) -> String {
+    use ed25519_dalek::Signer;
+    let sig = sk.sign(manifest_sha256.as_bytes());
+    hex::encode(sig.to_bytes())
+}
+
+/// Executes the build command with output captured to a transcript file.
+///
+/// Stdout and stderr are piped, read in separate threads, printed to the
+/// terminal in real time, and written to `transcript_path` with `[stdout]`
+/// and `[stderr]` line prefixes. This preserves real-time output while
+/// creating a full build log.
+fn execute_build_with_transcript(
+    build_cmd: &[String],
+    transcript_path: &Path,
+) -> Result<BuildResult> {
+    let (program, args) = build_cmd
+        .split_first()
+        .ok_or_else(|| anyhow!("Empty build command"))?;
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("executing build command: {program}"))?;
+
+    let child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stdout pipe"))?;
+    let child_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow!("failed to capture stderr pipe"))?;
+
+    let transcript = Arc::new(Mutex::new(std::io::BufWriter::new(
+        fs::File::create(transcript_path)
+            .with_context(|| format!("creating {}", transcript_path.display()))?,
+    )));
+
+    let t_out = transcript.clone();
+    let stdout_thread = thread::spawn(move || -> Result<u64> {
+        let reader = BufReader::new(child_stdout);
+        let mut total = 0u64;
+        let mut out = std::io::stdout();
+        for line in reader.lines() {
+            let line = line.context("reading stdout line")?;
+            total = total.saturating_add(line.len() as u64 + 1);
+            let _ = writeln!(out, "{line}");
+            if let Ok(mut t) = t_out.lock() {
+                let _ = writeln!(t, "[stdout] {line}");
+            }
+        }
+        Ok(total)
+    });
+
+    let t_err = transcript.clone();
+    let stderr_thread = thread::spawn(move || -> Result<u64> {
+        let reader = BufReader::new(child_stderr);
+        let mut total = 0u64;
+        let mut err = std::io::stderr();
+        for line in reader.lines() {
+            let line = line.context("reading stderr line")?;
+            total = total.saturating_add(line.len() as u64 + 1);
+            let _ = writeln!(err, "{line}");
+            if let Ok(mut t) = t_err.lock() {
+                let _ = writeln!(t, "[stderr] {line}");
+            }
+        }
+        Ok(total)
+    });
+
+    let status = child.wait().context("waiting for build command")?;
+
+    let stdout_size = stdout_thread
+        .join()
+        .map_err(|_| anyhow!("stdout reader thread panicked"))??;
+    let stderr_size = stderr_thread
+        .join()
+        .map_err(|_| anyhow!("stderr reader thread panicked"))??;
+
+    let exit_code = status.code().unwrap_or(-1);
+    Ok(BuildResult {
+        success: status.success(),
+        exit_code,
+        stdout_size,
+        stderr_size,
+    })
 }
 
 /// Computes a deterministic SHA-256 hash of the source tree.
@@ -391,9 +658,11 @@ struct EnvInfo {
     arch: String,
     compilers: serde_json::Value,
     selected_env_vars: serde_json::Value,
+    container: Option<String>,
 }
 
-/// Captures the current build environment: OS, architecture, and compiler versions.
+/// Captures the current build environment: OS, architecture, compiler versions,
+/// and container runtime detection.
 fn capture_environment() -> EnvInfo {
     let os = std::env::consts::OS.to_string();
     let arch = std::env::consts::ARCH.to_string();
@@ -436,11 +705,14 @@ fn capture_environment() -> EnvInfo {
         }
     }
 
+    let container = detect_container();
+
     EnvInfo {
         os,
         arch,
         compilers: serde_json::Value::Object(compilers),
         selected_env_vars: serde_json::Value::Object(env_vars),
+        container,
     }
 }
 
@@ -464,39 +736,6 @@ struct BuildResult {
     exit_code: i32,
     stdout_size: u64,
     stderr_size: u64,
-}
-
-/// Executes the build command and captures its result.
-///
-/// The command is executed via `std::process::Command` -- no shell is invoked.
-/// Stdout and stderr are inherited (streamed to the terminal in real time) so
-/// the user sees build output as it happens. This avoids buffering the entire
-/// build output in memory, which could be problematic for large builds.
-///
-/// Because output is inherited (not piped), we cannot measure exact byte
-/// counts. The `stdout_size` and `stderr_size` fields are set to 0 for
-/// inherited streams; the important signal is the exit code.
-fn execute_build(build_cmd: &[String]) -> Result<BuildResult> {
-    let (program, args) = build_cmd
-        .split_first()
-        .ok_or_else(|| anyhow!("Empty build command"))?;
-
-    let status = Command::new(program)
-        .args(args)
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .with_context(|| format!("executing build command: {program}"))?;
-
-    let exit_code = status.code().unwrap_or(-1);
-    Ok(BuildResult {
-        success: status.success(),
-        exit_code,
-        // Inherited streams cannot be measured; record 0 to indicate
-        // "streamed to terminal, not captured".
-        stdout_size: 0,
-        stderr_size: 0,
-    })
 }
 
 #[cfg(test)]
@@ -579,14 +818,19 @@ mod tests {
 
     #[test]
     fn test_execute_build_success() {
-        let result = execute_build(&["true".to_string()]).unwrap();
+        let dir = TempDir::new().unwrap();
+        let transcript = dir.path().join("transcript.txt");
+        let result = execute_build_with_transcript(&["true".to_string()], &transcript).unwrap();
         assert!(result.success);
         assert_eq!(result.exit_code, 0);
+        assert!(transcript.exists());
     }
 
     #[test]
     fn test_execute_build_failure() {
-        let result = execute_build(&["false".to_string()]).unwrap();
+        let dir = TempDir::new().unwrap();
+        let transcript = dir.path().join("transcript.txt");
+        let result = execute_build_with_transcript(&["false".to_string()], &transcript).unwrap();
         assert!(!result.success);
         assert_ne!(result.exit_code, 0);
     }
@@ -612,6 +856,7 @@ mod tests {
                 "-c".to_string(),
                 format!("echo 'built' > {}", artifact.display()),
             ],
+            None,
         );
         assert!(result.is_ok(), "run_build failed: {:?}", result.err());
 
@@ -620,6 +865,7 @@ mod tests {
         assert!(output_dir.join("provenance.json").exists());
         assert!(output_dir.join("layout.json").exists());
         assert!(output_dir.join("links").join("vbw-build.link").exists());
+        assert!(output_dir.join("transcript.txt").exists());
 
         // Verify manifest contents
         let manifest: serde_json::Value =
@@ -637,10 +883,53 @@ mod tests {
             Some(dir.path()),
             "https://github.com/actions/runner",
             &["false".to_string()],
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("failed"), "error: {err}");
+    }
+
+    #[test]
+    fn test_run_build_with_signing() {
+        let dir = TempDir::new().unwrap();
+        let src_dir = TempDir::new().unwrap();
+        let artifact = src_dir.path().join("output.txt");
+
+        // Generate a test Ed25519 key (32 bytes of deterministic data).
+        let key_bytes: [u8; 32] = [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+            25, 26, 27, 28, 29, 30, 31, 32,
+        ];
+        let key_file = dir.path().join("test.key");
+        fs::write(&key_file, key_bytes).unwrap();
+
+        fs::write(src_dir.path().join("input.txt"), b"source data").unwrap();
+
+        let output_dir = dir.path().join("signed-witness");
+        let result = run_build(
+            &output_dir,
+            &[artifact.clone()],
+            Some(src_dir.path()),
+            "https://github.com/actions/runner",
+            &[
+                "sh".to_string(),
+                "-c".to_string(),
+                format!("echo 'signed-build' > {}", artifact.display()),
+            ],
+            Some(key_file.as_path()),
+        );
+        assert!(result.is_ok(), "signed build failed: {:?}", result.err());
+
+        // Verify signature.json was produced
+        let sig_path = output_dir.join("signature.json");
+        assert!(sig_path.exists(), "signature.json should be created");
+
+        let sig: serde_json::Value = serde_json::from_slice(&fs::read(&sig_path).unwrap()).unwrap();
+        assert_eq!(sig["algorithm"], "ed25519");
+        assert!(sig["public_key"].as_str().unwrap().len() == 64);
+        assert!(sig["manifest_sha256"].as_str().unwrap().len() == 64);
+        assert!(!sig["signature"].as_str().unwrap().is_empty());
     }
 
     #[test]

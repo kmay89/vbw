@@ -718,3 +718,145 @@ fn test_build_help_shows_build_subcommand() {
         "help output should mention the build subcommand: {stdout}"
     );
 }
+
+// -------------------------------------------------------------------------
+// End-to-end: build a real Rust project, then verify the witness bundle
+// -------------------------------------------------------------------------
+
+/// Creates a minimal Rust hello-world project in the given directory.
+fn create_rust_hello_world(dir: &Path) {
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "hello"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hello"
+path = "src/main.rs"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("src").join("main.rs"),
+        "fn main() { println!(\"hello vbw\"); }\n",
+    )
+    .unwrap();
+}
+
+#[test]
+#[ignore = "slow: runs cargo build inside a temp project"]
+fn test_build_verify_real_rust_project() {
+    let project_dir = TempDir::new().unwrap();
+    let witness_dir = TempDir::new().unwrap();
+    let witness_path = witness_dir.path().join("bundle");
+
+    create_rust_hello_world(project_dir.path());
+
+    // Step 1: Build the Rust project with vbw build
+    let artifact = project_dir
+        .path()
+        .join("target")
+        .join("release")
+        .join("hello");
+
+    let build_output = Command::new(vbw_bin())
+        .args([
+            "build",
+            "--output-dir",
+            witness_path.to_str().unwrap(),
+            "--artifact",
+            artifact.to_str().unwrap(),
+            "--source-dir",
+            project_dir.path().to_str().unwrap(),
+            "--",
+            "cargo",
+            "build",
+            "--release",
+            "--manifest-path",
+        ])
+        .arg(project_dir.path().join("Cargo.toml"))
+        .output()
+        .expect("failed to execute vbw build");
+
+    assert!(
+        build_output.status.success(),
+        "vbw build with cargo should succeed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&build_output.stdout),
+        String::from_utf8_lossy(&build_output.stderr),
+    );
+
+    // Verify the artifact was built
+    assert!(artifact.exists(), "cargo build should produce the binary");
+
+    // Step 2: Verify the witness bundle
+    let verify_output = Command::new(vbw_bin())
+        .args([
+            "verify",
+            witness_path.to_str().unwrap(),
+            "--no-external",
+            "--dry-run",
+            "--slsa-mode",
+            "schema-only",
+        ])
+        .output()
+        .expect("failed to execute vbw verify");
+
+    assert!(
+        verify_output.status.success(),
+        "vbw verify should pass on a Rust build witness bundle.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&verify_output.stdout),
+        String::from_utf8_lossy(&verify_output.stderr),
+    );
+
+    // Step 3: Check verdict
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(witness_path.join("vbw").join("report.json")).unwrap())
+            .unwrap();
+    assert_eq!(report["result"], "PASS");
+    assert_eq!(
+        report["verdict"], "Verified-with-caveats",
+        "verdict should be Verified-with-caveats since external tools are skipped"
+    );
+
+    // Step 4: Verify bundle includes transcript and manifest
+    assert!(
+        witness_path.join("transcript.txt").exists(),
+        "transcript.txt should exist"
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(witness_path.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["build"]["exit_code"], 0);
+    assert!(
+        manifest["artifacts"].as_array().unwrap().len() == 1,
+        "should have exactly one artifact"
+    );
+}
+
+#[test]
+fn test_verify_report_contains_verdict() {
+    let dir = TempDir::new().unwrap();
+    create_minimal_bundle(dir.path());
+
+    Command::new(vbw_bin())
+        .args([
+            "verify",
+            dir.path().to_str().unwrap(),
+            "--no-external",
+            "--dry-run",
+            "--slsa-mode",
+            "schema-only",
+        ])
+        .output()
+        .expect("failed to execute vbw");
+
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.path().join("vbw").join("report.json")).unwrap())
+            .unwrap();
+
+    // With --no-external, verdict should be Verified-with-caveats (pass but tools skipped)
+    assert_eq!(report["result"], "PASS");
+    assert_eq!(report["verdict"], "Verified-with-caveats");
+}
