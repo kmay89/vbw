@@ -410,21 +410,19 @@ fn resolve_signing_key(key_path: Option<&Path>) -> Result<Option<ed25519_dalek::
     if let Some(path) = key_path {
         let bytes =
             fs::read(path).with_context(|| format!("reading signing key: {}", path.display()))?;
-        return parse_signing_key_bytes(&bytes)
+        parse_signing_key_bytes(&bytes)
             .with_context(|| format!("parsing signing key from {}", path.display()))
-            .map(Some);
-    }
-
-    if let Ok(b64) = std::env::var("VBW_ED25519_SK_B64") {
+            .map(Some)
+    } else if let Ok(b64) = std::env::var("VBW_ED25519_SK_B64") {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(b64)
             .context("decoding VBW_ED25519_SK_B64 as base64")?;
-        return parse_signing_key_bytes(&bytes)
+        parse_signing_key_bytes(&bytes)
             .context("parsing signing key from VBW_ED25519_SK_B64")
-            .map(Some);
+            .map(Some)
+    } else {
+        Ok(None)
     }
-
-    Ok(None)
 }
 
 /// Parses raw bytes into an Ed25519 signing key. Accepts 32-byte secret keys
@@ -503,7 +501,7 @@ fn execute_build_with_transcript(
             total = total.saturating_add(line.len() as u64 + 1);
             let _ = writeln!(out, "{line}");
             if let Ok(mut t) = t_out.lock() {
-                let _ = writeln!(t, "[stdout] {line}");
+                writeln!(t, "[stdout] {line}").context("writing stdout to transcript")?;
             }
         }
         Ok(total)
@@ -519,7 +517,7 @@ fn execute_build_with_transcript(
             total = total.saturating_add(line.len() as u64 + 1);
             let _ = writeln!(err, "{line}");
             if let Ok(mut t) = t_err.lock() {
-                let _ = writeln!(t, "[stderr] {line}");
+                writeln!(t, "[stderr] {line}").context("writing stderr to transcript")?;
             }
         }
         Ok(total)
