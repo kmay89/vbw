@@ -29,6 +29,8 @@
 //! | [`independence`] | Secret/network/digest/builder checks |
 //! | [`bundlehash`] | Deterministic SHA-256 evidence hashing |
 //! | [`attest`] | in-toto Statement v1 generation |
+//! | [`toolcheck`] | External tool availability detection |
+//! | [`build`] | Build witnessing and evidence bundle generation |
 //!
 //! ## Audit Guidance
 //!
@@ -55,3 +57,11 @@ pub mod bundlehash;
 /// Attestation generation. Produces an in-toto Statement v1 with a VBW
 /// predicate binding the verification results to the evidence bundle hash.
 pub mod attest;
+
+/// External tool availability detection. Probes `$PATH` for slsa-verifier,
+/// in-toto-verify, and cosign before the verification pipeline runs.
+pub mod toolcheck;
+
+/// Build witnessing. Captures source hash, environment, dependencies, runs
+/// the build command, hashes outputs, and produces a complete evidence bundle.
+pub mod build;
