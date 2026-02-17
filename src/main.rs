@@ -60,6 +60,8 @@ use time::format_description::well_known::Rfc3339;
 mod attest;
 mod build;
 mod bundlehash;
+#[allow(dead_code)]
+mod crypto;
 mod fs_guard;
 mod independence;
 mod policy;
@@ -585,6 +587,62 @@ fn verify_bundle(
         serde_json::from_slice(&fs_guard::read_validated(&prov_path, MAX_JSON_BYTES)?)?;
     let indep = independence::check_independence(&prov_json, &policy)?;
 
+    // --- Crypto policy & registry initialization ---
+    // Load crypto policy from the main policy JSON (if "crypto" key exists).
+    let crypto_policy = {
+        let policy_json: Option<Value> = policy_file.as_deref().and_then(|p| {
+            fs_guard::read_validated(p, MAX_JSON_BYTES)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        });
+        match policy_json {
+            Some(ref v) if v.get("crypto").is_some() =>
+            {
+                #[allow(clippy::indexing_slicing)]
+                serde_json::from_value::<crypto::policy::CryptoPolicy>(v["crypto"].clone())
+                    .context("failed to parse 'crypto' section of policy file")?
+            }
+            _ => crypto::policy::CryptoPolicy::default(),
+        }
+    };
+    let crypto_registry = crypto::registry::default_registry();
+
+    // Build crypto verification summary for the report.
+    let crypto_report = {
+        let supported: Vec<String> = crypto_registry
+            .all_algorithms()
+            .iter()
+            .map(|a| a.id.clone())
+            .collect();
+        let preferred_sigs = crypto_policy.preferred_signature_algorithms();
+        let preferred_sigs_ids: Vec<String> = preferred_sigs
+            .iter()
+            .map(crypto::SignatureAlgorithm::id)
+            .collect();
+
+        serde_json::json!({
+            "pqc_enabled": true,
+            "crypto_policy": {
+                "mode": format!("{:?}", crypto_policy.mode),
+                "minimum_security_level": crypto_policy.minimum_security_level,
+                "hash_algorithm": crypto_policy.hash_algorithm,
+                "preferred_signature_algorithms": preferred_sigs_ids,
+                "hybrid_rules": {
+                    "require_cross_family": crypto_policy.hybrid_rules.require_cross_family,
+                    "min_independent_assumptions": crypto_policy.hybrid_rules.min_independent_assumptions,
+                    "hybrid_kdf": crypto_policy.hybrid_rules.hybrid_kdf
+                }
+            },
+            "supported_algorithms": supported,
+            "cnsa2_ready": {
+                "ml_kem_1024": crypto_registry.supports_kem(&crypto::KemAlgorithm::MlKem1024),
+                "ml_dsa_87": crypto_registry.supports_signature(&crypto::SignatureAlgorithm::MlDsa87),
+                "slh_dsa": crypto_registry.supports_signature(&crypto::SignatureAlgorithm::SlhDsaSha2_256s),
+                "sha_384": crypto_registry.hash(&crypto::HashAlgorithm::Sha384, b"").is_ok()
+            }
+        })
+    };
+
     // --- Bundle hash ---
     let (bundle_sha256, evidence) = bundlehash::hash_bundle(bundle_dir)?;
     let vbw_out_dir = bundle_dir.join("vbw");
@@ -647,6 +705,7 @@ fn verify_bundle(
         "slsa": { "ok": slsa_ok, "detail": slsa_detail },
         "intoto": { "ok": intoto_ok, "detail": intoto_detail },
         "independence": indep,
+        "crypto_verification": crypto_report,
         "vbw_attestation_path": if dry_run { Value::Null } else { Value::String(att_path.display().to_string()) }
     });
 

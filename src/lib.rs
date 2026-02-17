@@ -65,3 +65,13 @@ pub mod toolcheck;
 /// Build witnessing. Captures source hash, environment, dependencies, runs
 /// the build command, hashes outputs, and produces a complete evidence bundle.
 pub mod build;
+
+/// Post-quantum crypto-agile signing and verification layer.
+///
+/// Provides hybrid (classical + PQC) and pure post-quantum signature
+/// verification, KEM decapsulation, and algorithm-agile policy enforcement.
+/// Implements FIPS 203 (ML-KEM), FIPS 204 (ML-DSA), FIPS 205 (SLH-DSA)
+/// with stubs for FIPS 206 (FN-DSA) and HQC.
+///
+/// See [`crypto::CryptoProvider`] for the core abstraction.
+pub mod crypto;

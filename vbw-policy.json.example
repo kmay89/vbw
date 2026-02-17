@@ -7,5 +7,33 @@
   "builder_allowlist_is_warning": true,
   "forbid_private_network_refs": true,
   "forbid_secrets": true,
-  "require_digests": true
+  "require_digests": true,
+
+  "crypto": {
+    "minimum_security_level": 3,
+    "mode": "hybrid",
+    "signature_algorithms": [
+      "ml-dsa-65+ed25519",
+      "ml-dsa-87+slh-dsa-sha2-256s",
+      "ml-dsa-65",
+      "slh-dsa-sha2-256s",
+      "ed25519"
+    ],
+    "kem_algorithms": [
+      "x25519+ml-kem-768",
+      "ml-kem-1024",
+      "x25519"
+    ],
+    "hash_algorithm": "sha-384",
+    "deprecation": {
+      "classical_only_error_date": "2030-01-01",
+      "rsa_reject_date": "2028-01-01",
+      "warn_below_level": 3
+    },
+    "hybrid_rules": {
+      "require_cross_family": true,
+      "min_independent_assumptions": 2,
+      "hybrid_kdf": "hkdf-sha-384"
+    }
+  }
 }
