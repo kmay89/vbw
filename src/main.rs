@@ -600,7 +600,7 @@ fn verify_bundle(
             {
                 #[allow(clippy::indexing_slicing)]
                 serde_json::from_value::<crypto::policy::CryptoPolicy>(v["crypto"].clone())
-                    .unwrap_or_default()
+                    .context("failed to parse 'crypto' section of policy file")?
             }
             _ => crypto::policy::CryptoPolicy::default(),
         }

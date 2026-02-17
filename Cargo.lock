@@ -291,6 +291,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8bf3682cdec91817be507e4aa104314898b95b84d74f3d43882210101a545b6"
 dependencies = [
  "block-buffer 0.11.0",
+ "const-oid 0.10.2",
  "crypto-common 0.2.0",
  "ctutils",
 ]
@@ -906,6 +907,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "sha3",
  "slh-dsa",
  "subtle",
  "tempfile",

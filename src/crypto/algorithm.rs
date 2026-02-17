@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 /// If one family's underlying hard problem is broken (e.g., lattice
 /// problems fall to a quantum algorithm), the other family's component
 /// still provides security.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MathFamily {
     /// Lattice-based (ML-KEM, ML-DSA, FN-DSA). Relies on Module-LWE / Module-SIS.

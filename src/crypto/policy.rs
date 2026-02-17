@@ -308,7 +308,7 @@ impl CryptoPolicy {
 
         let unique_count = {
             let mut u = families.to_vec();
-            u.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+            u.sort();
             u.dedup();
             u.len()
         };

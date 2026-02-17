@@ -60,27 +60,20 @@ pub fn validate_cross_family(
     policy.check_hybrid_composition(families)
 }
 
-/// Verifies a hybrid (classical + PQC) signature.
-///
-/// Both the classical and PQC components must verify successfully.
-/// The signature bytes are split according to the provided layout.
-pub fn verify_hybrid_signature(
+/// Splits a composite signature into two components, verifies each
+/// independently, and returns `Valid` only if both pass (AND logic).
+fn verify_composite_components(
     registry: &AlgorithmRegistry,
-    classical: &SignatureAlgorithm,
-    pqc: &SignatureAlgorithm,
-    classical_key: &PublicKeyBytes,
-    pqc_key: &PublicKeyBytes,
+    first_alg: &SignatureAlgorithm,
+    second_alg: &SignatureAlgorithm,
+    first_key: &PublicKeyBytes,
+    second_key: &PublicKeyBytes,
     message: &[u8],
     sig_layout: &CompositeSignatureLayout,
     signature: &SignatureBytes,
-    policy: &CryptoPolicy,
+    first_label: &str,
+    second_label: &str,
 ) -> Result<VerificationResult, CryptoError> {
-    // 1. Enforce cross-family requirement
-    let mut families = classical.math_family();
-    families.extend(pqc.math_family());
-    validate_cross_family(&families, policy)?;
-
-    // 2. Split signature bytes
     let sig_bytes = &signature.0;
 
     let first_end = sig_layout
@@ -100,38 +93,72 @@ pub fn verify_hybrid_signature(
         )));
     }
 
-    let classical_sig = SignatureBytes(
+    let first_sig = SignatureBytes(
         sig_bytes
             .get(sig_layout.first_offset..first_end)
-            .ok_or_else(|| CryptoError::InvalidEnvelope("classical sig slice failed".into()))?
+            .ok_or_else(|| CryptoError::InvalidEnvelope(format!("{first_label} sig slice failed")))?
             .to_vec(),
     );
-    let pqc_sig = SignatureBytes(
+    let second_sig = SignatureBytes(
         sig_bytes
             .get(sig_layout.second_offset..second_end)
-            .ok_or_else(|| CryptoError::InvalidEnvelope("PQC sig slice failed".into()))?
+            .ok_or_else(|| {
+                CryptoError::InvalidEnvelope(format!("{second_label} sig slice failed"))
+            })?
             .to_vec(),
     );
 
-    // 3. Verify classical component
-    let classical_result =
-        registry.verify_signature(classical, classical_key, message, &classical_sig)?;
-    if !classical_result.is_valid() {
+    // Verify first component
+    let first_result = registry.verify_signature(first_alg, first_key, message, &first_sig)?;
+    if !first_result.is_valid() {
         return Ok(VerificationResult::Invalid {
-            reason: format!("classical component ({}) failed", classical.id()),
+            reason: format!("{first_label} component ({}) failed", first_alg.id()),
         });
     }
 
-    // 4. Verify PQC component
-    let pqc_result = registry.verify_signature(pqc, pqc_key, message, &pqc_sig)?;
-    if !pqc_result.is_valid() {
+    // Verify second component
+    let second_result = registry.verify_signature(second_alg, second_key, message, &second_sig)?;
+    if !second_result.is_valid() {
         return Ok(VerificationResult::Invalid {
-            reason: format!("PQC component ({}) failed", pqc.id()),
+            reason: format!("{second_label} component ({}) failed", second_alg.id()),
         });
     }
 
-    // Both passed
     Ok(VerificationResult::Valid)
+}
+
+/// Verifies a hybrid (classical + PQC) signature.
+///
+/// Both the classical and PQC components must verify successfully.
+/// The signature bytes are split according to the provided layout.
+pub fn verify_hybrid_signature(
+    registry: &AlgorithmRegistry,
+    classical: &SignatureAlgorithm,
+    pqc: &SignatureAlgorithm,
+    classical_key: &PublicKeyBytes,
+    pqc_key: &PublicKeyBytes,
+    message: &[u8],
+    sig_layout: &CompositeSignatureLayout,
+    signature: &SignatureBytes,
+    policy: &CryptoPolicy,
+) -> Result<VerificationResult, CryptoError> {
+    // Enforce cross-family requirement
+    let mut families = classical.math_family();
+    families.extend(pqc.math_family());
+    validate_cross_family(&families, policy)?;
+
+    verify_composite_components(
+        registry,
+        classical,
+        pqc,
+        classical_key,
+        pqc_key,
+        message,
+        sig_layout,
+        signature,
+        "classical",
+        "PQC",
+    )
 }
 
 /// Verifies a dual-PQC signature (two PQC algorithms from different families).
@@ -148,61 +175,23 @@ pub fn verify_dual_pqc_signature(
     signature: &SignatureBytes,
     policy: &CryptoPolicy,
 ) -> Result<VerificationResult, CryptoError> {
-    // 1. Enforce cross-family requirement
+    // Enforce cross-family requirement
     let mut families = primary.math_family();
     families.extend(backup.math_family());
     validate_cross_family(&families, policy)?;
 
-    // 2. Split signature bytes
-    let sig_bytes = &signature.0;
-
-    let first_end = sig_layout
-        .first_offset
-        .checked_add(sig_layout.first_length)
-        .ok_or_else(|| CryptoError::InvalidEnvelope("signature layout overflow".into()))?;
-    let second_end = sig_layout
-        .second_offset
-        .checked_add(sig_layout.second_length)
-        .ok_or_else(|| CryptoError::InvalidEnvelope("signature layout overflow".into()))?;
-
-    if first_end > sig_bytes.len() || second_end > sig_bytes.len() {
-        return Err(CryptoError::InvalidEnvelope(format!(
-            "signature too short: {} bytes, need at least {}",
-            sig_bytes.len(),
-            std::cmp::max(first_end, second_end)
-        )));
-    }
-
-    let primary_sig = SignatureBytes(
-        sig_bytes
-            .get(sig_layout.first_offset..first_end)
-            .ok_or_else(|| CryptoError::InvalidEnvelope("primary sig slice failed".into()))?
-            .to_vec(),
-    );
-    let backup_sig = SignatureBytes(
-        sig_bytes
-            .get(sig_layout.second_offset..second_end)
-            .ok_or_else(|| CryptoError::InvalidEnvelope("backup sig slice failed".into()))?
-            .to_vec(),
-    );
-
-    // 3. Verify primary component
-    let primary_result = registry.verify_signature(primary, primary_key, message, &primary_sig)?;
-    if !primary_result.is_valid() {
-        return Ok(VerificationResult::Invalid {
-            reason: format!("primary PQC component ({}) failed", primary.id()),
-        });
-    }
-
-    // 4. Verify backup component
-    let backup_result = registry.verify_signature(backup, backup_key, message, &backup_sig)?;
-    if !backup_result.is_valid() {
-        return Ok(VerificationResult::Invalid {
-            reason: format!("backup PQC component ({}) failed", backup.id()),
-        });
-    }
-
-    Ok(VerificationResult::Valid)
+    verify_composite_components(
+        registry,
+        primary,
+        backup,
+        primary_key,
+        backup_key,
+        message,
+        sig_layout,
+        signature,
+        "primary PQC",
+        "backup PQC",
+    )
 }
 
 #[cfg(test)]

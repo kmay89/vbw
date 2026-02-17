@@ -24,15 +24,15 @@ type HkdfSha384 = hkdf::Hkdf<Sha384, Hmac<Sha384>>;
 /// Combines two shared secrets from a hybrid KEM using HKDF-SHA-384.
 ///
 /// This implements the "KDF combiner" pattern recommended by NIST SP 800-56C:
-/// 1. Concatenate both shared secrets: `ss1 || ss2`
+/// 1. Concatenate both shared secrets: `classical_ss || pqc_ss`
 /// 2. Use HKDF-Extract with the concatenation as IKM
 /// 3. Use HKDF-Expand with algorithm identifiers as info
 /// 4. Output a 48-byte (384-bit) combined secret
 ///
 /// # Arguments
 ///
-/// - `ss1`: First shared secret (typically classical, e.g., X25519).
-/// - `ss2`: Second shared secret (typically PQC, e.g., ML-KEM).
+/// - `classical_ss`: Classical shared secret (e.g., from X25519).
+/// - `pqc_ss`: Post-quantum shared secret (e.g., from ML-KEM).
 /// - `classical_alg_id`: String ID of the classical algorithm (for domain separation).
 /// - `pqc_alg_id`: String ID of the PQC algorithm (for domain separation).
 ///
@@ -41,16 +41,16 @@ type HkdfSha384 = hkdf::Hkdf<Sha384, Hmac<Sha384>>;
 /// The concatenated input is zeroized after extraction. The output retains
 /// security as long as *either* input secret is secure (this is the key
 /// property that makes hybrid KEM safe against partial compromise).
-pub fn combine_shared_secrets(
-    ss1: &SharedSecret,
-    ss2: &SharedSecret,
+pub fn combine_hybrid_secrets(
+    classical_ss: &SharedSecret,
+    pqc_ss: &SharedSecret,
     classical_alg_id: &str,
     pqc_alg_id: &str,
 ) -> Result<SharedSecret, CryptoError> {
     // Concatenate both shared secrets
-    let mut ikm = Vec::with_capacity(ss1.0.len() + ss2.0.len());
-    ikm.extend_from_slice(&ss1.0);
-    ikm.extend_from_slice(&ss2.0);
+    let mut ikm = Vec::with_capacity(classical_ss.0.len() + pqc_ss.0.len());
+    ikm.extend_from_slice(&classical_ss.0);
+    ikm.extend_from_slice(&pqc_ss.0);
 
     // Build info string for domain separation
     let info = format!("vbw-hybrid-kem:{classical_alg_id}+{pqc_alg_id}");
@@ -77,7 +77,7 @@ mod tests {
     fn combine_produces_48_byte_output() {
         let ss1 = SharedSecret(vec![0xAA; 32]);
         let ss2 = SharedSecret(vec![0xBB; 32]);
-        let combined = combine_shared_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
+        let combined = combine_hybrid_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
         assert_eq!(combined.0.len(), 48);
     }
 
@@ -85,8 +85,8 @@ mod tests {
     fn combine_is_deterministic() {
         let ss1 = SharedSecret(vec![0xAA; 32]);
         let ss2 = SharedSecret(vec![0xBB; 32]);
-        let a = combine_shared_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
-        let b = combine_shared_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
+        let a = combine_hybrid_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
+        let b = combine_hybrid_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
         assert_eq!(a.0, b.0);
     }
 
@@ -94,8 +94,8 @@ mod tests {
     fn different_algorithms_produce_different_output() {
         let ss1 = SharedSecret(vec![0xAA; 32]);
         let ss2 = SharedSecret(vec![0xBB; 32]);
-        let a = combine_shared_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
-        let b = combine_shared_secrets(&ss1, &ss2, "x25519", "ml-kem-1024").unwrap();
+        let a = combine_hybrid_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
+        let b = combine_hybrid_secrets(&ss1, &ss2, "x25519", "ml-kem-1024").unwrap();
         assert_ne!(
             a.0, b.0,
             "different algorithm IDs must produce different output"
@@ -107,8 +107,8 @@ mod tests {
         let ss1a = SharedSecret(vec![0xAA; 32]);
         let ss1b = SharedSecret(vec![0xCC; 32]);
         let ss2 = SharedSecret(vec![0xBB; 32]);
-        let a = combine_shared_secrets(&ss1a, &ss2, "x25519", "ml-kem-768").unwrap();
-        let b = combine_shared_secrets(&ss1b, &ss2, "x25519", "ml-kem-768").unwrap();
+        let a = combine_hybrid_secrets(&ss1a, &ss2, "x25519", "ml-kem-768").unwrap();
+        let b = combine_hybrid_secrets(&ss1b, &ss2, "x25519", "ml-kem-768").unwrap();
         assert_ne!(a.0, b.0);
     }
 
@@ -116,8 +116,8 @@ mod tests {
     fn order_matters() {
         let ss1 = SharedSecret(vec![0xAA; 32]);
         let ss2 = SharedSecret(vec![0xBB; 32]);
-        let a = combine_shared_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
-        let b = combine_shared_secrets(&ss2, &ss1, "x25519", "ml-kem-768").unwrap();
+        let a = combine_hybrid_secrets(&ss1, &ss2, "x25519", "ml-kem-768").unwrap();
+        let b = combine_hybrid_secrets(&ss2, &ss1, "x25519", "ml-kem-768").unwrap();
         assert_ne!(
             a.0, b.0,
             "swapping secret order must produce different output"

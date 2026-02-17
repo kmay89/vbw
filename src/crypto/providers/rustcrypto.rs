@@ -302,6 +302,28 @@ impl CryptoProvider for RustCryptoProvider {
                 quantum_safe: true,
                 oid: Some("2.16.840.1.101.3.4.2.3".into()),
             },
+            // SHA-3 hash algorithms
+            AlgorithmDescriptor {
+                id: "sha3-256".into(),
+                nist_level: NistLevel::L1,
+                math_family: MathFamily::HashBased,
+                quantum_safe: true,
+                oid: Some("2.16.840.1.101.3.4.2.8".into()),
+            },
+            AlgorithmDescriptor {
+                id: "sha3-384".into(),
+                nist_level: NistLevel::L3,
+                math_family: MathFamily::HashBased,
+                quantum_safe: true,
+                oid: Some("2.16.840.1.101.3.4.2.9".into()),
+            },
+            AlgorithmDescriptor {
+                id: "sha3-512".into(),
+                nist_level: NistLevel::L5,
+                math_family: MathFamily::HashBased,
+                quantum_safe: true,
+                oid: Some("2.16.840.1.101.3.4.2.10".into()),
+            },
         ]
     }
 
@@ -387,10 +409,15 @@ impl CryptoProvider for RustCryptoProvider {
             HashAlgorithm::Sha256 => Ok(DigestBytes(sha2::Sha256::digest(data).to_vec())),
             HashAlgorithm::Sha384 => Ok(DigestBytes(sha2::Sha384::digest(data).to_vec())),
             HashAlgorithm::Sha512 => Ok(DigestBytes(sha2::Sha512::digest(data).to_vec())),
-            _ => Err(CryptoError::UnsupportedAlgorithm(format!(
-                "hash algorithm {} not supported by rustcrypto provider",
-                algorithm.id()
-            ))),
+            HashAlgorithm::Sha3_256 => Ok(DigestBytes(
+                <sha3::Sha3_256 as sha3::digest::Digest>::digest(data).to_vec(),
+            )),
+            HashAlgorithm::Sha3_384 => Ok(DigestBytes(
+                <sha3::Sha3_384 as sha3::digest::Digest>::digest(data).to_vec(),
+            )),
+            HashAlgorithm::Sha3_512 => Ok(DigestBytes(
+                <sha3::Sha3_512 as sha3::digest::Digest>::digest(data).to_vec(),
+            )),
         }
     }
 }
@@ -686,6 +713,27 @@ mod tests {
     }
 
     #[test]
+    fn sha3_256_hash() {
+        let provider = RustCryptoProvider;
+        let digest = provider.hash(&HashAlgorithm::Sha3_256, b"hello").unwrap();
+        assert_eq!(digest.0.len(), 32);
+    }
+
+    #[test]
+    fn sha3_384_hash() {
+        let provider = RustCryptoProvider;
+        let digest = provider.hash(&HashAlgorithm::Sha3_384, b"hello").unwrap();
+        assert_eq!(digest.0.len(), 48);
+    }
+
+    #[test]
+    fn sha3_512_hash() {
+        let provider = RustCryptoProvider;
+        let digest = provider.hash(&HashAlgorithm::Sha3_512, b"hello").unwrap();
+        assert_eq!(digest.0.len(), 64);
+    }
+
+    #[test]
     fn hash_deterministic() {
         let provider = RustCryptoProvider;
         let a = provider.hash(&HashAlgorithm::Sha384, b"data").unwrap();
@@ -725,10 +773,15 @@ mod tests {
         assert!(ids.contains(&"ml-kem-768"));
         assert!(ids.contains(&"ml-kem-1024"));
 
-        // Hashes
+        // Hashes (SHA-2)
         assert!(ids.contains(&"sha-256"));
         assert!(ids.contains(&"sha-384"));
         assert!(ids.contains(&"sha-512"));
+
+        // Hashes (SHA-3)
+        assert!(ids.contains(&"sha3-256"));
+        assert!(ids.contains(&"sha3-384"));
+        assert!(ids.contains(&"sha3-512"));
     }
 
     // -----------------------------------------------------------------------
