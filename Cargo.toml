@@ -31,8 +31,20 @@ walkdir = "2"
 regex = "1"
 time = { version = ">=0.3.47, <0.4", features = ["formatting"] }
 
+# Post-quantum cryptography (RustCrypto FIPS implementations)
+ml-dsa  = "0.1.0-rc.7"   # FIPS 204: ML-DSA (CRYSTALS-Dilithium) signatures
+ml-kem  = "0.3.0-rc.0"   # FIPS 203: ML-KEM (CRYSTALS-Kyber) key encapsulation
+slh-dsa = "0.2.0-rc.4"   # FIPS 205: SLH-DSA (SPHINCS+) hash-based signatures
+
+# Crypto utilities for PQC hybrid composition
+hkdf    = "0.12"                                    # HKDF key derivation for hybrid KEM
+hmac    = "0.12"                                    # HMAC (required by HKDF)
+subtle  = "2"                                       # Constant-time comparisons
+zeroize = { version = "1", features = ["derive"] }  # Zeroing sensitive memory
+
 [dev-dependencies]
 tempfile = "3"
+rand_core = "0.10"   # TryRng/CryptoRng for PQC key generation in tests
 
 [[bin]]
 name = "vbw"

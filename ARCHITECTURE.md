@@ -99,15 +99,75 @@ deterministic SHA-256 hash of the input evidence bundle.
 
 ## Cryptographic Inventory
 
+### Classical Operations
+
 | Operation | Crate | Algorithm | Notes |
 |-----------|-------|-----------|-------|
 | Bundle hashing | `sha2` 0.10 (RustCrypto) | SHA-256 | Pure Rust, no FFI, not FIPS certified |
 | Hex encoding | `hex` 0.4 | N/A | Trivial encoding utility |
+| Ed25519 verification | `ed25519-dalek` 2 | Ed25519 | Strict verification mode |
 | Signing | delegated to `cosign` | Sigstore keyless | External process, not VBW code |
 | SLSA verification | delegated to `slsa-verifier` | Various | External process, not VBW code |
 
-VBW does **not** implement any asymmetric cryptography, key management,
-or signing algorithms. These are entirely delegated to external tools.
+### Post-Quantum Cryptographic (PQC) Operations
+
+VBW includes a **crypto-agile verification layer** (`src/crypto/`) that implements
+NIST post-quantum standards for signature verification and key encapsulation.
+VBW **never signs** -- it only verifies signatures produced by external build systems.
+
+| FIPS | Algorithm | Crate | Type | Status |
+|------|-----------|-------|------|--------|
+| FIPS 203 | ML-KEM (CRYSTALS-Kyber) | `ml-kem` | KEM | Implemented |
+| FIPS 204 | ML-DSA (CRYSTALS-Dilithium) | `ml-dsa` | Signature | Implemented |
+| FIPS 205 | SLH-DSA (SPHINCS+) | `slh-dsa` | Signature | Implemented |
+| FIPS 206 | FN-DSA (FALCON) | -- | Signature | Stub (draft standard) |
+| TBD | HQC | -- | KEM | Stub (expected ~2027) |
+
+All PQC crates are from the **RustCrypto** project: pure Rust, no C FFI, no `unsafe`,
+NIST KAT-tested.
+
+### Hybrid Composition
+
+VBW supports **hybrid signatures** (classical + PQC) and **dual-PQC signatures**
+(two PQC algorithms from different mathematical families). Hybrid verification
+requires both components to pass (AND logic). Cross-family enforcement prevents
+a single mathematical breakthrough from compromising both components.
+
+| Composition | Example | Math Families |
+|-------------|---------|---------------|
+| Hybrid (classical + PQC) | Ed25519 + ML-DSA-65 | Elliptic Curve + Lattice |
+| Dual-PQC | ML-DSA-65 + SLH-DSA-256s | Lattice + Hash-Based |
+
+Hybrid KEM shared secrets are combined using **HKDF-SHA-384** per NIST SP 800-56C Rev. 2.
+
+### Crypto Module Structure
+
+```
+src/crypto/
+├── mod.rs              # CryptoProvider trait, opaque key/sig wrappers
+├── algorithm.rs        # SignatureAlgorithm, KemAlgorithm, HashAlgorithm enums
+├── policy.rs           # CryptoPolicy: security level, mode, deprecation
+├── registry.rs         # AlgorithmRegistry: maps IDs to providers
+├── hybrid.rs           # Hybrid/dual-PQC verification, cross-family enforcement
+├── kdf.rs              # HKDF-SHA-384 for hybrid KEM secret combination
+├── envelope.rs         # CryptoEnvelope: attestation crypto metadata format
+├── errors.rs           # CryptoError enum
+└── providers/
+    ├── mod.rs
+    ├── rustcrypto.rs   # ML-DSA, SLH-DSA, ML-KEM, SHA-2 (RustCrypto)
+    ├── ed25519.rs      # Ed25519 verification (ed25519-dalek)
+    └── stub.rs         # FN-DSA, HQC, ECDSA placeholders
+```
+
+### CNSA 2.0 Compliance
+
+VBW's PQC layer is designed for NSA CNSA 2.0 compliance:
+
+- ML-KEM-1024 available for key establishment
+- ML-DSA-87 available for digital signatures
+- SLH-DSA available as hash-based backup
+- AES-256 for symmetric encryption
+- SHA-384 minimum for hashing
 
 ## Threat Model Boundary
 
