@@ -157,6 +157,112 @@ impl Default for CryptoEnvelope {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Self-describing composite envelope (vbw-composite-v1)
+// ---------------------------------------------------------------------------
+
+/// A single component of a composite signature (e.g., one half of a hybrid).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompositeComponent {
+    /// Canonical algorithm identifier (e.g., `"ed25519"`, `"ml-dsa-65"`).
+    pub algorithm: String,
+    /// Base64-encoded signature bytes for this component.
+    pub signature: String,
+    /// Base64-encoded public key bytes for this component.
+    pub public_key: String,
+}
+
+/// Self-describing composite signature envelope.
+///
+/// Replaces the raw byte-offset `CompositeSignatureLayout` with a
+/// structured, self-describing format at the serialization boundary.
+/// `CompositeSignatureLayout` remains as the internal optimization path.
+///
+/// Wire format:
+/// ```json
+/// {
+///   "version": 1,
+///   "format": "vbw-composite-v1",
+///   "components": [
+///     {"algorithm": "ed25519", "signature": "<base64>", "public_key": "<base64>"},
+///     {"algorithm": "ml-dsa-65", "signature": "<base64>", "public_key": "<base64>"}
+///   ]
+/// }
+/// ```
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompositeEnvelope {
+    /// Format version. Currently 1.
+    pub version: u32,
+    /// Format identifier.
+    pub format: String,
+    /// Ordered list of signature components. Verification requires ALL
+    /// components to pass (AND logic).
+    pub components: Vec<CompositeComponent>,
+}
+
+impl CompositeEnvelope {
+    /// The canonical format string for this envelope version.
+    pub const FORMAT_V1: &'static str = "vbw-composite-v1";
+
+    /// Creates a new composite envelope with the given components.
+    pub fn new(components: Vec<CompositeComponent>) -> Self {
+        Self {
+            version: 1,
+            format: Self::FORMAT_V1.into(),
+            components,
+        }
+    }
+
+    /// Serializes the envelope to a JSON string.
+    pub fn to_json_string(&self) -> Result<String, super::errors::CryptoError> {
+        serde_json::to_string_pretty(self)
+            .map_err(|e| super::errors::CryptoError::InvalidEnvelope(e.to_string()))
+    }
+
+    /// Deserializes a `CompositeEnvelope` from a JSON string.
+    ///
+    /// Returns `InvalidEnvelope` if the format is not `"vbw-composite-v1"`
+    /// or if any component is missing required fields.
+    pub fn from_json_str(json: &str) -> Result<Self, super::errors::CryptoError> {
+        let envelope: Self = serde_json::from_str(json)
+            .map_err(|e| super::errors::CryptoError::InvalidEnvelope(e.to_string()))?;
+
+        if envelope.format != Self::FORMAT_V1 {
+            return Err(super::errors::CryptoError::InvalidEnvelope(format!(
+                "unsupported composite envelope format: {}",
+                envelope.format
+            )));
+        }
+
+        if envelope.components.is_empty() {
+            return Err(super::errors::CryptoError::InvalidEnvelope(
+                "composite envelope must have at least one component".into(),
+            ));
+        }
+
+        // Validate that all components have non-empty fields
+        for (i, comp) in envelope.components.iter().enumerate() {
+            if comp.algorithm.is_empty() {
+                return Err(super::errors::CryptoError::InvalidEnvelope(format!(
+                    "component {i} has empty algorithm"
+                )));
+            }
+            if comp.signature.is_empty() {
+                return Err(super::errors::CryptoError::InvalidEnvelope(format!(
+                    "component {i} has empty signature"
+                )));
+            }
+            if comp.public_key.is_empty() {
+                return Err(super::errors::CryptoError::InvalidEnvelope(format!(
+                    "component {i} has empty public_key"
+                )));
+            }
+        }
+
+        Ok(envelope)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::similar_names)]
 mod tests {
@@ -250,5 +356,68 @@ mod tests {
         let enc = parsed.encryption.unwrap();
         assert_eq!(enc.algorithm, "x25519+ml-kem-768");
         assert_eq!(enc.content_encryption, "aes-256-gcm");
+    }
+
+    // -- CompositeEnvelope tests --
+
+    #[test]
+    fn composite_envelope_roundtrip() {
+        let env = CompositeEnvelope::new(vec![
+            CompositeComponent {
+                algorithm: "ed25519".into(),
+                signature: "c2lnMQ==".into(),
+                public_key: "cGsx".into(),
+            },
+            CompositeComponent {
+                algorithm: "ml-dsa-65".into(),
+                signature: "c2lnMg==".into(),
+                public_key: "cGsy".into(),
+            },
+        ]);
+
+        let json = env.to_json_string().unwrap();
+        let parsed = CompositeEnvelope::from_json_str(&json).unwrap();
+        assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.format, "vbw-composite-v1");
+        assert_eq!(parsed.components.len(), 2);
+        assert_eq!(parsed.components[0].algorithm, "ed25519");
+        assert_eq!(parsed.components[1].algorithm, "ml-dsa-65");
+    }
+
+    #[test]
+    fn composite_envelope_rejects_wrong_format() {
+        let json = r#"{"version": 1, "format": "unknown-v1", "components": [
+            {"algorithm": "ed25519", "signature": "c2ln", "public_key": "cGs="}
+        ]}"#;
+        let result = CompositeEnvelope::from_json_str(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn composite_envelope_rejects_empty_components() {
+        let json = r#"{"version": 1, "format": "vbw-composite-v1", "components": []}"#;
+        let result = CompositeEnvelope::from_json_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn composite_envelope_rejects_empty_algorithm_field() {
+        let json = r#"{"version": 1, "format": "vbw-composite-v1", "components": [
+            {"algorithm": "", "signature": "c2ln", "public_key": "cGs="}
+        ]}"#;
+        let result = CompositeEnvelope::from_json_str(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty algorithm"));
+    }
+
+    #[test]
+    fn composite_envelope_rejects_empty_signature() {
+        let json = r#"{"version": 1, "format": "vbw-composite-v1", "components": [
+            {"algorithm": "ed25519", "signature": "", "public_key": "cGs="}
+        ]}"#;
+        let result = CompositeEnvelope::from_json_str(json);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty signature"));
     }
 }

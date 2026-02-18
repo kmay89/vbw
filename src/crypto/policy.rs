@@ -28,6 +28,10 @@ pub enum CryptoMode {
     PqcOnly,
     /// Accept classical-only signatures (deprecated; will warn).
     ClassicalOnly,
+    /// CNSA 2.0 mode: enforces ML-KEM-1024 (Level 5) for KEMs,
+    /// ML-DSA-87 (Level 5) for signatures. Rejects classical-only
+    /// unconditionally. Warns if hybrid is used (CNSA 2.0 prefers pure PQC).
+    CnSa2,
 }
 
 /// Deprecation enforcement policy.
@@ -162,11 +166,10 @@ fn default_signature_algorithms() -> Vec<String> {
 }
 
 fn default_kem_algorithms() -> Vec<String> {
-    vec![
-        "x25519+ml-kem-768".into(),
-        "ml-kem-1024".into(),
-        "x25519".into(),
-    ]
+    // NOTE: X25519 and x25519+ml-kem-768 were previously listed here but no
+    // X25519 KEM provider is registered, making those entries silently unusable.
+    // Use only ML-KEM entries that have registered providers.
+    vec!["ml-kem-1024".into(), "ml-kem-768".into()]
 }
 
 fn default_hash_algorithm() -> String {
@@ -250,6 +253,32 @@ impl CryptoPolicy {
             CryptoMode::ClassicalOnly => {
                 // Everything is allowed (but we warn about classical-only mode itself)
             }
+            CryptoMode::CnSa2 => {
+                // CNSA 2.0: reject all classical-only unconditionally
+                if !algorithm.is_quantum_safe() {
+                    return PolicyVerdict::Rejected(format!(
+                        "classical-only algorithm {} rejected: CNSA 2.0 mode requires \
+                         post-quantum algorithms",
+                        alg_id
+                    ));
+                }
+                // CNSA 2.0 requires Level 5 minimum for signatures
+                let alg_level = algorithm.nist_level();
+                if alg_level < NistLevel::L5 {
+                    return PolicyVerdict::Rejected(format!(
+                        "algorithm {} provides NIST level {} but CNSA 2.0 requires Level 5",
+                        alg_id,
+                        alg_level.value()
+                    ));
+                }
+                // CNSA 2.0 prefers pure PQC; warn on hybrid
+                if algorithm.is_composite() {
+                    return PolicyVerdict::Warn(format!(
+                        "hybrid algorithm {} used in CNSA 2.0 mode; pure PQC preferred",
+                        alg_id
+                    ));
+                }
+            }
         }
 
         // 3. Deprecation level warnings
@@ -287,6 +316,23 @@ impl CryptoPolicy {
             ));
         }
 
+        // CNSA 2.0 enforcement: Level 5 minimum, reject classical-only
+        if self.mode == CryptoMode::CnSa2 {
+            if !algorithm.is_quantum_safe() {
+                return PolicyVerdict::Rejected(format!(
+                    "classical KEM {} rejected: CNSA 2.0 requires post-quantum KEMs",
+                    alg_id
+                ));
+            }
+            if algorithm.nist_level() < NistLevel::L5 {
+                return PolicyVerdict::Rejected(format!(
+                    "KEM {} provides NIST level {} but CNSA 2.0 requires Level 5",
+                    alg_id,
+                    algorithm.nist_level().value()
+                ));
+            }
+        }
+
         PolicyVerdict::Allowed
     }
 
@@ -296,22 +342,19 @@ impl CryptoPolicy {
         &self,
         families: &[super::algorithm::MathFamily],
     ) -> Result<(), CryptoError> {
-        if self.hybrid_rules.require_cross_family {
-            let mut unique = families.to_vec();
-            unique.dedup();
-            if unique.len() < 2 {
-                return Err(CryptoError::HybridCompositionError(
-                    "hybrid composition requires components from different math families".into(),
-                ));
-            }
-        }
-
+        // Compute unique families once (sort-then-dedup for correctness).
         let unique_count = {
             let mut u = families.to_vec();
             u.sort();
             u.dedup();
             u.len()
         };
+
+        if self.hybrid_rules.require_cross_family && unique_count < 2 {
+            return Err(CryptoError::HybridCompositionError(
+                "hybrid composition requires components from different math families".into(),
+            ));
+        }
 
         #[allow(clippy::cast_possible_truncation)]
         let unique_u8 = unique_count as u8;
@@ -431,6 +474,34 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_cross_family_non_consecutive_duplicates_rejected() {
+        // Regression test: dedup() without sort() only removes consecutive duplicates.
+        // [Lattice, HashBased, Lattice] has non-consecutive duplicate Lattice entries.
+        // With sort-then-dedup this correctly resolves to 2 unique families, which is
+        // valid. But if someone wraps 3 families and 2 are the same (e.g., a triple
+        // composition), ensure we count correctly.
+        let policy = CryptoPolicy::default();
+        use super::super::algorithm::MathFamily;
+
+        // 3-element input with non-consecutive duplicate: 2 unique families
+        let result = policy.check_hybrid_composition(&[
+            MathFamily::Lattice,
+            MathFamily::HashBased,
+            MathFamily::Lattice,
+        ]);
+        // 2 unique families satisfies both cross-family (≥2) and min_assumptions (≥2)
+        assert!(result.is_ok());
+
+        // All same family, non-consecutive: should still reject
+        let result = policy.check_hybrid_composition(&[
+            MathFamily::Lattice,
+            MathFamily::Lattice,
+            MathFamily::Lattice,
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn resolve_hash_algorithm_default() {
         let policy = CryptoPolicy::default();
         let hash = policy.resolve_hash_algorithm().unwrap();
@@ -465,5 +536,85 @@ mod tests {
         let policy: CryptoPolicy = serde_json::from_str(json).unwrap();
         assert_eq!(policy.minimum_security_level, 5);
         assert_eq!(policy.mode, CryptoMode::PqcOnly);
+    }
+
+    #[test]
+    fn cnsa2_mode_rejects_classical_only() {
+        let policy = CryptoPolicy {
+            mode: CryptoMode::CnSa2,
+            minimum_security_level: 1, // lower to isolate CNSA 2.0 check
+            ..CryptoPolicy::default()
+        };
+        let alg = SignatureAlgorithm::Ed25519;
+        let verdict = policy.check_signature_algorithm(&alg, "2025-06-01");
+        assert!(matches!(verdict, PolicyVerdict::Rejected(msg) if msg.contains("CNSA 2.0")));
+    }
+
+    #[test]
+    fn cnsa2_mode_rejects_below_level_5() {
+        let policy = CryptoPolicy {
+            mode: CryptoMode::CnSa2,
+            minimum_security_level: 1,
+            ..CryptoPolicy::default()
+        };
+        // ML-DSA-65 is Level 3 — should be rejected
+        let verdict = policy.check_signature_algorithm(&SignatureAlgorithm::MlDsa65, "2025-06-01");
+        assert!(matches!(verdict, PolicyVerdict::Rejected(msg) if msg.contains("Level 5")));
+    }
+
+    #[test]
+    fn cnsa2_mode_allows_ml_dsa_87() {
+        let policy = CryptoPolicy {
+            mode: CryptoMode::CnSa2,
+            minimum_security_level: 1,
+            ..CryptoPolicy::default()
+        };
+        let verdict = policy.check_signature_algorithm(&SignatureAlgorithm::MlDsa87, "2025-06-01");
+        // ML-DSA-87 is Level 5, pure PQC — should be allowed (or warn about preference list)
+        assert!(!matches!(verdict, PolicyVerdict::Rejected(_)));
+    }
+
+    #[test]
+    fn cnsa2_mode_warns_on_hybrid() {
+        let policy = CryptoPolicy {
+            mode: CryptoMode::CnSa2,
+            minimum_security_level: 1,
+            ..CryptoPolicy::default()
+        };
+        let alg = SignatureAlgorithm::DualPqc {
+            primary: Box::new(SignatureAlgorithm::MlDsa87),
+            backup: Box::new(SignatureAlgorithm::SlhDsaSha2_256s),
+        };
+        let verdict = policy.check_signature_algorithm(&alg, "2025-06-01");
+        assert!(matches!(verdict, PolicyVerdict::Warn(msg) if msg.contains("CNSA 2.0")));
+    }
+
+    #[test]
+    fn cnsa2_mode_kem_rejects_below_level_5() {
+        let policy = CryptoPolicy {
+            mode: CryptoMode::CnSa2,
+            minimum_security_level: 1,
+            ..CryptoPolicy::default()
+        };
+        let verdict = policy.check_kem_algorithm(&KemAlgorithm::MlKem768);
+        assert!(matches!(verdict, PolicyVerdict::Rejected(msg) if msg.contains("Level 5")));
+    }
+
+    #[test]
+    fn cnsa2_mode_kem_allows_ml_kem_1024() {
+        let policy = CryptoPolicy {
+            mode: CryptoMode::CnSa2,
+            minimum_security_level: 1,
+            ..CryptoPolicy::default()
+        };
+        let verdict = policy.check_kem_algorithm(&KemAlgorithm::MlKem1024);
+        assert!(matches!(verdict, PolicyVerdict::Allowed));
+    }
+
+    #[test]
+    fn cnsa2_mode_deserializes() {
+        let json = r#"{ "mode": "cn-sa2" }"#;
+        let policy: CryptoPolicy = serde_json::from_str(json).unwrap();
+        assert_eq!(policy.mode, CryptoMode::CnSa2);
     }
 }

@@ -69,7 +69,14 @@ impl CryptoProvider for Ed25519Provider {
             }
         })?;
 
-        // Strict verification (rejects weak keys and non-canonical signatures)
+        // Strict verification (rejects weak keys and non-canonical signatures).
+        //
+        // Constant-time audit note:
+        // `ed25519-dalek` uses `verify_strict()` which internally computes
+        // the verification equation R = [s]B - [H(R,A,M)]A using Edwards
+        // curve arithmetic. The final comparison uses `CtEq` (constant-time
+        // equality from the `subtle` crate) to compare the computed R against
+        // the claimed R in the signature, preventing timing side-channels.
         match vk.verify_strict(message, &sig) {
             Ok(()) => Ok(VerificationResult::Valid),
             Err(_) => Ok(VerificationResult::Invalid {
