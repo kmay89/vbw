@@ -32,8 +32,12 @@ use serde::{Deserialize, Serialize};
 pub enum MathFamily {
     /// Lattice-based (ML-KEM, ML-DSA, FN-DSA). Relies on Module-LWE / Module-SIS.
     Lattice,
-    /// Hash-based (SLH-DSA, LMS, XMSS). Security reduces to hash function properties.
+    /// Stateless hash-based (SLH-DSA). Security reduces to hash function properties.
     HashBased,
+    /// Stateful hash-based (LMS, XMSS per SP 800-208). Distinct from stateless
+    /// SLH-DSA because stateful schemes have one-time-use key management
+    /// requirements. Used for firmware signing per CNSA 2.0.
+    StatefulHashBased,
     /// Code-based (HQC, Classic `McEliece`). Relies on decoding random linear codes.
     CodeBased,
     /// Elliptic curve (Ed25519, ECDSA). Classical; vulnerable to Shor's algorithm.
@@ -149,6 +153,14 @@ pub enum SignatureAlgorithm {
     /// FN-DSA-1024 (NIST Level 5). Stub: not yet implemented.
     FnDsa1024,
 
+    // -- SP 800-208: Stateful hash-based signatures --
+    /// LMS (Leighton-Micali Signature). Stub: stateful hash-based, used for
+    /// firmware signing per CNSA 2.0. Not yet implemented.
+    Lms,
+    /// XMSS (eXtended Merkle Signature Scheme). Stub: stateful hash-based,
+    /// used for firmware signing per CNSA 2.0. Not yet implemented.
+    Xmss,
+
     // -- Classical (hybrid partners, deprecation path) --
     /// Ed25519 (classical, ~128-bit security pre-quantum).
     Ed25519,
@@ -184,12 +196,17 @@ impl SignatureAlgorithm {
         match self {
             Self::MlDsa44 => NistLevel::L2,
 
+            // Level 3: ML-DSA-65, SLH-DSA-192 variants, ECDSA P-384,
+            // LMS/XMSS (conservative default for SP 800-208; actual level
+            // depends on parameter set, will be parameterized when implemented)
             Self::MlDsa65
             | Self::SlhDsaSha2_192s
             | Self::SlhDsaSha2_192f
             | Self::SlhDsaShake192s
             | Self::SlhDsaShake192f
-            | Self::EcdsaP384 => NistLevel::L3,
+            | Self::EcdsaP384
+            | Self::Lms
+            | Self::Xmss => NistLevel::L3,
 
             Self::MlDsa87
             | Self::SlhDsaSha2_256s
@@ -237,6 +254,8 @@ impl SignatureAlgorithm {
             | Self::SlhDsaShake256s
             | Self::SlhDsaShake256f => vec![MathFamily::HashBased],
 
+            Self::Lms | Self::Xmss => vec![MathFamily::StatefulHashBased],
+
             Self::Ed25519 | Self::EcdsaP256 | Self::EcdsaP384 => {
                 vec![MathFamily::EllipticCurve]
             }
@@ -259,6 +278,8 @@ impl SignatureAlgorithm {
     /// because the PQC component provides post-quantum security (the
     /// classical component provides transitional security).
     pub fn is_quantum_safe(&self) -> bool {
+        // Only classical algorithms are not quantum-safe.
+        // Lms/Xmss (stateful hash-based) are quantum-safe.
         !matches!(self, Self::Ed25519 | Self::EcdsaP256 | Self::EcdsaP384)
     }
 
@@ -290,6 +311,9 @@ impl SignatureAlgorithm {
 
             Self::FnDsa512 => "fn-dsa-512".into(),
             Self::FnDsa1024 => "fn-dsa-1024".into(),
+
+            Self::Lms => "lms".into(),
+            Self::Xmss => "xmss".into(),
 
             Self::Ed25519 => "ed25519".into(),
             Self::EcdsaP256 => "ecdsa-p256".into(),
@@ -362,6 +386,9 @@ impl SignatureAlgorithm {
 
             "fn-dsa-512" => Some(Self::FnDsa512),
             "fn-dsa-1024" => Some(Self::FnDsa1024),
+
+            "lms" => Some(Self::Lms),
+            "xmss" => Some(Self::Xmss),
 
             "ed25519" => Some(Self::Ed25519),
             "ecdsa-p256" => Some(Self::EcdsaP256),
@@ -558,6 +585,86 @@ impl HashAlgorithm {
     }
 }
 
+// ---------------------------------------------------------------------------
+// OID constants
+// ---------------------------------------------------------------------------
+
+/// Well-known OIDs for algorithms implemented or referenced by VBW.
+///
+/// These are validated against NIST's published OID assignments (CSOR)
+/// and relevant RFCs/standards.
+pub mod oid {
+    // ML-DSA (FIPS 204) — NIST CSOR: 2.16.840.1.101.3.4.3.{17,18,19}
+    /// ML-DSA-44 OID.
+    pub const ML_DSA_44: &str = "2.16.840.1.101.3.4.3.17";
+    /// ML-DSA-65 OID.
+    pub const ML_DSA_65: &str = "2.16.840.1.101.3.4.3.18";
+    /// ML-DSA-87 OID.
+    pub const ML_DSA_87: &str = "2.16.840.1.101.3.4.3.19";
+
+    // SLH-DSA SHA-2 (FIPS 205) — NIST CSOR: 2.16.840.1.101.3.4.3.{20-25}
+    /// SLH-DSA-SHA2-128s OID.
+    pub const SLH_DSA_SHA2_128S: &str = "2.16.840.1.101.3.4.3.20";
+    /// SLH-DSA-SHA2-128f OID.
+    pub const SLH_DSA_SHA2_128F: &str = "2.16.840.1.101.3.4.3.21";
+    /// SLH-DSA-SHA2-192s OID.
+    pub const SLH_DSA_SHA2_192S: &str = "2.16.840.1.101.3.4.3.22";
+    /// SLH-DSA-SHA2-192f OID.
+    pub const SLH_DSA_SHA2_192F: &str = "2.16.840.1.101.3.4.3.23";
+    /// SLH-DSA-SHA2-256s OID.
+    pub const SLH_DSA_SHA2_256S: &str = "2.16.840.1.101.3.4.3.24";
+    /// SLH-DSA-SHA2-256f OID.
+    pub const SLH_DSA_SHA2_256F: &str = "2.16.840.1.101.3.4.3.25";
+
+    // SLH-DSA SHAKE (FIPS 205) — NIST CSOR: 2.16.840.1.101.3.4.3.{26-31}
+    /// SLH-DSA-SHAKE-128s OID.
+    pub const SLH_DSA_SHAKE_128S: &str = "2.16.840.1.101.3.4.3.26";
+    /// SLH-DSA-SHAKE-128f OID.
+    pub const SLH_DSA_SHAKE_128F: &str = "2.16.840.1.101.3.4.3.27";
+    /// SLH-DSA-SHAKE-192s OID.
+    pub const SLH_DSA_SHAKE_192S: &str = "2.16.840.1.101.3.4.3.28";
+    /// SLH-DSA-SHAKE-192f OID.
+    pub const SLH_DSA_SHAKE_192F: &str = "2.16.840.1.101.3.4.3.29";
+    /// SLH-DSA-SHAKE-256s OID.
+    pub const SLH_DSA_SHAKE_256S: &str = "2.16.840.1.101.3.4.3.30";
+    /// SLH-DSA-SHAKE-256f OID.
+    pub const SLH_DSA_SHAKE_256F: &str = "2.16.840.1.101.3.4.3.31";
+
+    // ML-KEM (FIPS 203) — NIST CSOR: 2.16.840.1.101.3.4.4.{1,2,3}
+    /// ML-KEM-512 OID.
+    pub const ML_KEM_512: &str = "2.16.840.1.101.3.4.4.1";
+    /// ML-KEM-768 OID.
+    pub const ML_KEM_768: &str = "2.16.840.1.101.3.4.4.2";
+    /// ML-KEM-1024 OID.
+    pub const ML_KEM_1024: &str = "2.16.840.1.101.3.4.4.3";
+
+    // Ed25519 — RFC 8410
+    /// Ed25519 OID.
+    pub const ED25519: &str = "1.3.101.112";
+
+    // SHA-2 — NIST CSOR: 2.16.840.1.101.3.4.2.{1,2,3}
+    /// SHA-256 OID.
+    pub const SHA_256: &str = "2.16.840.1.101.3.4.2.1";
+    /// SHA-384 OID.
+    pub const SHA_384: &str = "2.16.840.1.101.3.4.2.2";
+    /// SHA-512 OID.
+    pub const SHA_512: &str = "2.16.840.1.101.3.4.2.3";
+
+    // SHA-3 — NIST CSOR: 2.16.840.1.101.3.4.2.{8,9,10}
+    /// SHA3-256 OID.
+    pub const SHA3_256: &str = "2.16.840.1.101.3.4.2.8";
+    /// SHA3-384 OID.
+    pub const SHA3_384: &str = "2.16.840.1.101.3.4.2.9";
+    /// SHA3-512 OID.
+    pub const SHA3_512: &str = "2.16.840.1.101.3.4.2.10";
+
+    // ECDSA — ANSI X9.62 / RFC 5480
+    /// ECDSA with SHA-256 on P-256 OID.
+    pub const ECDSA_P256: &str = "1.2.840.10045.4.3.2";
+    /// ECDSA with SHA-384 on P-384 OID.
+    pub const ECDSA_P384: &str = "1.2.840.10045.4.3.3";
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -722,5 +829,60 @@ mod tests {
         assert!(NistLevel::from_u8(0).is_none());
         assert!(NistLevel::from_u8(6).is_none());
         assert_eq!(NistLevel::from_u8(3), Some(NistLevel::L3));
+    }
+
+    #[test]
+    fn lms_xmss_properties() {
+        let lms = SignatureAlgorithm::Lms;
+        assert_eq!(lms.nist_level(), NistLevel::L3);
+        assert_eq!(lms.math_family(), vec![MathFamily::StatefulHashBased]);
+        assert!(lms.is_quantum_safe());
+        assert_eq!(lms.id(), "lms");
+        assert_eq!(
+            SignatureAlgorithm::from_id("lms"),
+            Some(SignatureAlgorithm::Lms)
+        );
+
+        let xmss = SignatureAlgorithm::Xmss;
+        assert_eq!(xmss.nist_level(), NistLevel::L3);
+        assert_eq!(xmss.math_family(), vec![MathFamily::StatefulHashBased]);
+        assert!(xmss.is_quantum_safe());
+        assert_eq!(xmss.id(), "xmss");
+        assert_eq!(
+            SignatureAlgorithm::from_id("xmss"),
+            Some(SignatureAlgorithm::Xmss)
+        );
+    }
+
+    #[test]
+    fn stateful_hashbased_is_distinct_from_hashbased() {
+        // StatefulHashBased (LMS/XMSS) must be a different family from
+        // HashBased (SLH-DSA) so they can form valid dual-PQC composites.
+        assert_ne!(MathFamily::HashBased, MathFamily::StatefulHashBased);
+    }
+
+    #[test]
+    fn oid_constants_have_correct_prefix() {
+        // Validate that OID constants use the expected NIST CSOR arc prefix
+        // (2.16.840.1.101.3.4) or known classical OID arcs.
+        let nist_oids = [
+            oid::ML_DSA_44,
+            oid::ML_DSA_65,
+            oid::ML_DSA_87,
+            oid::ML_KEM_512,
+            oid::ML_KEM_768,
+            oid::ML_KEM_1024,
+            oid::SHA_256,
+            oid::SHA_384,
+            oid::SHA_512,
+        ];
+        for oid_str in &nist_oids {
+            assert!(
+                oid_str.starts_with("2.16.840.1.101.3.4"),
+                "NIST OID should start with CSOR prefix: {oid_str}"
+            );
+        }
+        // Ed25519 uses RFC 8410 arc
+        assert!(oid::ED25519.starts_with("1.3.101."));
     }
 }

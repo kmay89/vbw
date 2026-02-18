@@ -146,6 +146,127 @@ impl AlgorithmRegistry {
     pub fn supports_kem(&self, algorithm: &KemAlgorithm) -> bool {
         self.kem_providers.contains_key(&algorithm.id())
     }
+
+    /// Validates that every algorithm in the policy's preference lists has a
+    /// registered provider. Returns a list of warnings for unusable defaults.
+    /// This should be called at startup to detect configuration errors early.
+    pub fn validate_defaults(&self, policy: &super::policy::CryptoPolicy) -> Vec<RegistryWarning> {
+        let mut warnings = Vec::new();
+
+        for alg_id in &policy.signature_algorithms {
+            if let Some(alg) = SignatureAlgorithm::from_id(alg_id) {
+                self.check_sig_components(&alg, alg_id, &mut warnings);
+            } else {
+                warnings.push(RegistryWarning {
+                    algorithm: alg_id.clone(),
+                    reason: "not a recognized algorithm ID".into(),
+                });
+            }
+        }
+
+        for alg_id in &policy.kem_algorithms {
+            if let Some(alg) = KemAlgorithm::from_id(alg_id) {
+                self.check_kem_components(&alg, alg_id, &mut warnings);
+            } else {
+                warnings.push(RegistryWarning {
+                    algorithm: alg_id.clone(),
+                    reason: "not a recognized KEM algorithm ID".into(),
+                });
+            }
+        }
+
+        warnings
+    }
+
+    /// Checks whether all components of a signature algorithm have providers.
+    fn check_sig_components(
+        &self,
+        alg: &SignatureAlgorithm,
+        alg_id: &str,
+        warnings: &mut Vec<RegistryWarning>,
+    ) {
+        let check = |sub_alg: &SignatureAlgorithm, name: &str, w: &mut Vec<RegistryWarning>| {
+            if !self.supports_signature(sub_alg) {
+                w.push(RegistryWarning {
+                    algorithm: alg_id.to_string(),
+                    reason: format!(
+                        "{name} component '{}' has no registered provider",
+                        sub_alg.id()
+                    ),
+                });
+            }
+        };
+
+        match alg {
+            SignatureAlgorithm::Hybrid { classical, pqc } => {
+                check(classical, "classical", warnings);
+                check(pqc, "PQC", warnings);
+            }
+            SignatureAlgorithm::DualPqc { primary, backup } => {
+                check(primary, "primary", warnings);
+                check(backup, "backup", warnings);
+            }
+            _ => {
+                if !self.supports_signature(alg) {
+                    warnings.push(RegistryWarning {
+                        algorithm: alg_id.to_string(),
+                        reason: "no registered provider".into(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Checks whether all components of a KEM algorithm have providers.
+    fn check_kem_components(
+        &self,
+        alg: &KemAlgorithm,
+        alg_id: &str,
+        warnings: &mut Vec<RegistryWarning>,
+    ) {
+        let check = |sub_alg: &KemAlgorithm, name: &str, w: &mut Vec<RegistryWarning>| {
+            if !self.supports_kem(sub_alg) {
+                w.push(RegistryWarning {
+                    algorithm: alg_id.to_string(),
+                    reason: format!(
+                        "{name} KEM component '{}' has no registered provider",
+                        sub_alg.id()
+                    ),
+                });
+            }
+        };
+
+        match alg {
+            KemAlgorithm::HybridKem { classical, pqc } => {
+                check(classical, "classical", warnings);
+                check(pqc, "PQC", warnings);
+            }
+            _ => {
+                if !self.supports_kem(alg) {
+                    warnings.push(RegistryWarning {
+                        algorithm: alg_id.to_string(),
+                        reason: "no registered KEM provider".into(),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Warning produced by `AlgorithmRegistry::validate_defaults` when a
+/// policy preference lists an algorithm without a registered provider.
+#[derive(Clone, Debug)]
+pub struct RegistryWarning {
+    /// The algorithm ID from the policy.
+    pub algorithm: String,
+    /// Why the algorithm is unusable.
+    pub reason: String,
+}
+
+impl std::fmt::Display for RegistryWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unusable default '{}': {}", self.algorithm, self.reason)
+    }
 }
 
 impl Default for AlgorithmRegistry {
@@ -233,5 +354,44 @@ mod tests {
         let reg = AlgorithmRegistry::new();
         assert!(!reg.supports_signature(&SignatureAlgorithm::MlDsa65));
         assert!(!reg.supports_kem(&KemAlgorithm::MlKem768));
+    }
+
+    #[test]
+    fn validate_defaults_no_warnings_for_default_policy() {
+        let reg = default_registry();
+        let policy = super::super::policy::CryptoPolicy::default();
+        let warnings = reg.validate_defaults(&policy);
+        assert!(
+            warnings.is_empty(),
+            "default policy with default registry should produce no warnings, \
+             got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn validate_defaults_warns_for_unregistered_kem() {
+        let reg = default_registry();
+        let policy = super::super::policy::CryptoPolicy {
+            kem_algorithms: vec!["x25519+ml-kem-768".into()],
+            ..super::super::policy::CryptoPolicy::default()
+        };
+        let warnings = reg.validate_defaults(&policy);
+        // x25519 has no registered KEM provider
+        assert!(!warnings.is_empty());
+        assert!(warnings.iter().any(|w| w.algorithm == "x25519+ml-kem-768"));
+    }
+
+    #[test]
+    fn validate_defaults_warns_for_unknown_algorithm_id() {
+        let reg = default_registry();
+        let policy = super::super::policy::CryptoPolicy {
+            signature_algorithms: vec!["totally-unknown-alg".into()],
+            ..super::super::policy::CryptoPolicy::default()
+        };
+        let warnings = reg.validate_defaults(&policy);
+        assert!(!warnings.is_empty());
+        assert!(warnings
+            .iter()
+            .any(|w| w.reason.contains("not a recognized")));
     }
 }

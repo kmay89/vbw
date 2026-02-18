@@ -31,6 +31,14 @@ pub struct RustCryptoProvider;
 ///
 /// This is a generic helper that handles the byte-level deserialization
 /// and dispatches to the `signature::Verifier` trait implementation.
+///
+/// # Constant-time audit note
+///
+/// ML-DSA verification in the `ml-dsa` crate uses the algebraic verification
+/// equation (checking that Az = c·t + w) rather than byte comparison of
+/// signature data. The internal field arithmetic uses constant-time operations
+/// provided by the `ml-dsa` crate. No raw byte comparison of signatures
+/// occurs in this path.
 fn verify_ml_dsa<P>(
     public_key: &[u8],
     message: &[u8],
@@ -73,6 +81,14 @@ where
 // ---------------------------------------------------------------------------
 
 /// Verifies an SLH-DSA signature for a specific parameter set.
+///
+/// # Constant-time audit note
+///
+/// SLH-DSA verification in the `slh-dsa` crate recomputes the FORS/WOTS+
+/// authentication path from the signature and compares the resulting root
+/// against the public key root. Hash computations are inherently
+/// constant-time (no secret-dependent branches). The `slh-dsa` crate does
+/// not perform raw byte comparison of secret data in the verification path.
 fn verify_slh_dsa<P>(
     public_key: &[u8],
     message: &[u8],
@@ -259,26 +275,27 @@ impl CryptoProvider for RustCryptoProvider {
                 oid: Some("2.16.840.1.101.3.4.3.31".into()),
             },
             // ML-KEM (FIPS 203)
+            // OIDs per NIST CSOR: 2.16.840.1.101.3.4.4.{1,2,3}
             AlgorithmDescriptor {
                 id: "ml-kem-512".into(),
                 nist_level: NistLevel::L1,
                 math_family: MathFamily::Lattice,
                 quantum_safe: true,
-                oid: None,
+                oid: Some("2.16.840.1.101.3.4.4.1".into()),
             },
             AlgorithmDescriptor {
                 id: "ml-kem-768".into(),
                 nist_level: NistLevel::L3,
                 math_family: MathFamily::Lattice,
                 quantum_safe: true,
-                oid: None,
+                oid: Some("2.16.840.1.101.3.4.4.2".into()),
             },
             AlgorithmDescriptor {
                 id: "ml-kem-1024".into(),
                 nist_level: NistLevel::L5,
                 math_family: MathFamily::Lattice,
                 quantum_safe: true,
-                oid: None,
+                oid: Some("2.16.840.1.101.3.4.4.3".into()),
             },
             // Hash algorithms
             AlgorithmDescriptor {

@@ -67,6 +67,22 @@ impl CryptoProvider for StubProvider {
                 quantum_safe: true,
                 oid: None,
             },
+            // LMS/XMSS — SP 800-208 stateful hash-based signatures
+            // Required by CNSA 2.0 for firmware signing.
+            AlgorithmDescriptor {
+                id: "lms".into(),
+                nist_level: NistLevel::L3,
+                math_family: MathFamily::StatefulHashBased,
+                quantum_safe: true,
+                oid: None,
+            },
+            AlgorithmDescriptor {
+                id: "xmss".into(),
+                nist_level: NistLevel::L3,
+                math_family: MathFamily::StatefulHashBased,
+                quantum_safe: true,
+                oid: None,
+            },
             // ECDSA — not yet implemented in VBW, registered for policy awareness
             AlgorithmDescriptor {
                 id: "ecdsa-p256".into(),
@@ -160,6 +176,8 @@ mod tests {
         assert!(ids.contains(&"hqc-128"));
         assert!(ids.contains(&"hqc-192"));
         assert!(ids.contains(&"hqc-256"));
+        assert!(ids.contains(&"lms"));
+        assert!(ids.contains(&"xmss"));
         assert!(ids.contains(&"ecdsa-p256"));
         assert!(ids.contains(&"ecdsa-p384"));
     }
